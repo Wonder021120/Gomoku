@@ -1,0 +1,37 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/cache folders
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code local settings
+.vscode/settings.json
+
+# Experiment outputs
+results/raw/
+results/processed/
+results/figures/
+
+# Models and training data
+models/
+checkpoints/
+self_play_data/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
