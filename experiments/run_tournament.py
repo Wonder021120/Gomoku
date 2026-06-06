@@ -13,7 +13,8 @@ sys.path.append(str(PROJECT_ROOT))
 
 from experiments.run_match import MatchResult, run_match
 from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
-
+from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
+from gomoku.minimax_agent import MinimaxAgent
 
 def create_agent(agent_name: str, seed: int) -> BaseAgent:
     """
@@ -24,6 +25,9 @@ def create_agent(agent_name: str, seed: int) -> BaseAgent:
 
     if agent_name == "greedy":
         return GreedyAgent(seed=seed)
+
+    if agent_name == "minimax":
+        return MinimaxAgent(depth=1, seed=seed)
 
     raise ValueError(f"Unsupported agent: {agent_name}")
 
@@ -213,7 +217,7 @@ def parse_args() -> argparse.Namespace:
         "--black",
         type=str,
         default="random",
-        choices=["random", "greedy"],
+        choices=["random", "greedy", "minimax"],
         help="Agent playing black.",
     )
 
@@ -221,7 +225,7 @@ def parse_args() -> argparse.Namespace:
         "--white",
         type=str,
         default="random",
-        choices=["random", "greedy"],
+        choices=["random", "greedy", "minimax"],
         help="Agent playing white.",
     )
 
