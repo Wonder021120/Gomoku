@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from dataclasses import asdict
@@ -12,7 +13,6 @@ sys.path.append(str(PROJECT_ROOT))
 
 from experiments.run_match import MatchResult, run_match
 from gomoku.agents import RandomAgent
-from gomoku.game import GameStatus
 
 
 def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name: str) -> None:
@@ -64,7 +64,6 @@ def summarise_results(results: list[MatchResult]) -> dict[str, float | int]:
     black_wins = sum(1 for result in results if result.winner == "black")
     white_wins = sum(1 for result in results if result.winner == "white")
     draws = sum(1 for result in results if result.winner == "draw")
-
     first_player_wins = sum(1 for result in results if result.first_player_win)
 
     avg_moves = mean(result.moves for result in results) if results else 0.0
@@ -84,7 +83,7 @@ def summarise_results(results: list[MatchResult]) -> dict[str, float | int]:
     }
 
 
-def print_summary(summary: dict[str, float | int], rule_name: str) -> None:
+def print_summary(summary: dict[str, float | int], rule_name: str, output_path: Path) -> None:
     print("Tournament finished")
     print(f"Rule: {rule_name}")
     print(f"Games: {summary['total_games']}")
@@ -96,25 +95,35 @@ def print_summary(summary: dict[str, float | int], rule_name: str) -> None:
     print(f"Average moves: {summary['avg_moves']:.2f}")
     print(f"Average black decision time: {summary['avg_black_time']:.6f}s")
     print(f"Average white decision time: {summary['avg_white_time']:.6f}s")
+    print(f"CSV saved to: {output_path}")
 
 
 def run_random_tournament(
-    games: int = 100,
-    board_size: int = 15,
-    rule_name: str = "standard",
-    output_path: Path = Path("results/raw/random_vs_random_standard.csv"),
+    games: int,
+    board_size: int,
+    rule_name: str,
+    seed: int,
+    output_path: Path,
 ) -> list[MatchResult]:
     """
     Run a RandomAgent vs RandomAgent tournament.
+
+    Currently only the standard rule is supported.
     """
+    if games <= 0:
+        raise ValueError("Number of games must be positive.")
+
+    if board_size <= 0:
+        raise ValueError("Board size must be positive.")
+
     if rule_name != "standard":
         raise NotImplementedError("Only the standard rule is currently supported.")
 
     results: list[MatchResult] = []
 
     for game_index in range(games):
-        black_agent = RandomAgent(seed=1000 + game_index * 2)
-        white_agent = RandomAgent(seed=1000 + game_index * 2 + 1)
+        black_agent = RandomAgent(seed=seed + game_index * 2)
+        white_agent = RandomAgent(seed=seed + game_index * 2 + 1)
 
         result = run_match(
             black_agent=black_agent,
@@ -128,16 +137,62 @@ def run_random_tournament(
     save_results_to_csv(results, output_path=output_path, rule_name=rule_name)
 
     summary = summarise_results(results)
-    print_summary(summary, rule_name=rule_name)
-    print(f"CSV saved to: {output_path}")
+    print_summary(summary, rule_name=rule_name, output_path=output_path)
 
     return results
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run a Gomoku AI-vs-AI tournament."
+    )
+
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=100,
+        help="Number of games to run.",
+    )
+
+    parser.add_argument(
+        "--board-size",
+        type=int,
+        default=15,
+        help="Board size. Default is 15.",
+    )
+
+    parser.add_argument(
+        "--rule",
+        type=str,
+        default="standard",
+        choices=["standard"],
+        help="Opening rule. Currently only standard is supported.",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1000,
+        help="Base random seed.",
+    )
+
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("results/raw/random_vs_random_standard.csv"),
+        help="Path to output CSV file.",
+    )
+
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = parse_args()
+
     run_random_tournament(
-        games=100,
-        board_size=15,
-        rule_name="standard",
-        output_path=Path("results/raw/random_vs_random_standard.csv"),
+        games=args.games,
+        board_size=args.board_size,
+        rule_name=args.rule,
+        seed=args.seed,
+        output_path=args.output,
     )
