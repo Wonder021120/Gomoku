@@ -12,17 +12,25 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
 
 from experiments.run_match import MatchResult, run_match
-from gomoku.agents import RandomAgent
+from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
+
+
+def create_agent(agent_name: str, seed: int) -> BaseAgent:
+    """
+    Create an agent by name.
+    """
+    if agent_name == "random":
+        return RandomAgent(seed=seed)
+
+    if agent_name == "greedy":
+        return GreedyAgent(seed=seed)
+
+    raise ValueError(f"Unsupported agent: {agent_name}")
 
 
 def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name: str) -> None:
     """
     Save match results to a CSV file.
-
-    Args:
-        results: List of MatchResult objects.
-        output_path: CSV output path.
-        rule_name: Name of the rule used in the tournament.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -83,9 +91,17 @@ def summarise_results(results: list[MatchResult]) -> dict[str, float | int]:
     }
 
 
-def print_summary(summary: dict[str, float | int], rule_name: str, output_path: Path) -> None:
+def print_summary(
+    summary: dict[str, float | int],
+    rule_name: str,
+    black_agent_name: str,
+    white_agent_name: str,
+    output_path: Path,
+) -> None:
     print("Tournament finished")
     print(f"Rule: {rule_name}")
+    print(f"Black agent: {black_agent_name}")
+    print(f"White agent: {white_agent_name}")
     print(f"Games: {summary['total_games']}")
     print(f"Black wins: {summary['black_wins']}")
     print(f"White wins: {summary['white_wins']}")
@@ -98,15 +114,17 @@ def print_summary(summary: dict[str, float | int], rule_name: str, output_path: 
     print(f"CSV saved to: {output_path}")
 
 
-def run_random_tournament(
+def run_tournament(
     games: int,
     board_size: int,
     rule_name: str,
+    black_agent_name: str,
+    white_agent_name: str,
     seed: int,
     output_path: Path,
 ) -> list[MatchResult]:
     """
-    Run a RandomAgent vs RandomAgent tournament.
+    Run an AI-vs-AI tournament.
 
     Currently only the standard rule is supported.
     """
@@ -122,8 +140,14 @@ def run_random_tournament(
     results: list[MatchResult] = []
 
     for game_index in range(games):
-        black_agent = RandomAgent(seed=seed + game_index * 2)
-        white_agent = RandomAgent(seed=seed + game_index * 2 + 1)
+        black_agent = create_agent(
+            agent_name=black_agent_name,
+            seed=seed + game_index * 2,
+        )
+        white_agent = create_agent(
+            agent_name=white_agent_name,
+            seed=seed + game_index * 2 + 1,
+        )
 
         result = run_match(
             black_agent=black_agent,
@@ -137,9 +161,25 @@ def run_random_tournament(
     save_results_to_csv(results, output_path=output_path, rule_name=rule_name)
 
     summary = summarise_results(results)
-    print_summary(summary, rule_name=rule_name, output_path=output_path)
+    print_summary(
+        summary=summary,
+        rule_name=rule_name,
+        black_agent_name=black_agent_name,
+        white_agent_name=white_agent_name,
+        output_path=output_path,
+    )
 
     return results
+
+
+def build_default_output_path(
+    black_agent: str,
+    white_agent: str,
+    rule_name: str,
+    board_size: int,
+) -> Path:
+    filename = f"{black_agent}_vs_{white_agent}_{rule_name}_{board_size}x{board_size}.csv"
+    return Path("results/raw") / filename
 
 
 def parse_args() -> argparse.Namespace:
@@ -170,6 +210,22 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--black",
+        type=str,
+        default="random",
+        choices=["random", "greedy"],
+        help="Agent playing black.",
+    )
+
+    parser.add_argument(
+        "--white",
+        type=str,
+        default="random",
+        choices=["random", "greedy"],
+        help="Agent playing white.",
+    )
+
+    parser.add_argument(
         "--seed",
         type=int,
         default=1000,
@@ -179,8 +235,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("results/raw/random_vs_random_standard.csv"),
-        help="Path to output CSV file.",
+        default=None,
+        help="Path to output CSV file. If omitted, a default filename is used.",
     )
 
     return parser.parse_args()
@@ -189,10 +245,21 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-    run_random_tournament(
+    output_path = args.output
+    if output_path is None:
+        output_path = build_default_output_path(
+            black_agent=args.black,
+            white_agent=args.white,
+            rule_name=args.rule,
+            board_size=args.board_size,
+        )
+
+    run_tournament(
         games=args.games,
         board_size=args.board_size,
         rule_name=args.rule,
+        black_agent_name=args.black,
+        white_agent_name=args.white,
         seed=args.seed,
-        output_path=args.output,
+        output_path=output_path,
     )
