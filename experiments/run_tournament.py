@@ -178,13 +178,33 @@ def run_tournament(
     return results
 
 
+def format_agent_name_for_filename(agent_name: str, minimax_depth: int) -> str:
+    """
+    Format agent name for output filenames.
+    """
+    if agent_name == "minimax":
+        return f"minimax_d{minimax_depth}"
+
+    return agent_name
+
+
 def build_default_output_path(
     black_agent: str,
     white_agent: str,
     rule_name: str,
     board_size: int,
+    minimax_depth: int,
 ) -> Path:
-    filename = f"{black_agent}_vs_{white_agent}_{rule_name}_{board_size}x{board_size}.csv"
+    black_name = format_agent_name_for_filename(
+        agent_name=black_agent,
+        minimax_depth=minimax_depth,
+    )
+    white_name = format_agent_name_for_filename(
+        agent_name=white_agent,
+        minimax_depth=minimax_depth,
+    )
+
+    filename = f"{black_name}_vs_{white_name}_{rule_name}_{board_size}x{board_size}.csv"
     return Path("results/raw") / filename
 
 
@@ -265,6 +285,7 @@ if __name__ == "__main__":
             white_agent=args.white,
             rule_name=args.rule,
             board_size=args.board_size,
+            minimax_depth=args.minimax_depth,
         )
 
     run_tournament(
