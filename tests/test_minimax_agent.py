@@ -60,3 +60,44 @@ def test_minimax_agent_can_play_a_move_in_game():
     game.play_move(move)
 
     assert game.board.grid[move[0], move[1]] == Board.BLACK
+
+def test_minimax_scores_open_four_higher_than_blocked_four():
+    agent = MinimaxAgent(depth=1, seed=42)
+
+    open_four_board = Board(size=15)
+    open_four_board.place_stone(7, 5, Board.BLACK)
+    open_four_board.place_stone(7, 6, Board.BLACK)
+    open_four_board.place_stone(7, 7, Board.BLACK)
+    open_four_board.place_stone(7, 8, Board.BLACK)
+
+    blocked_four_board = Board(size=15)
+    blocked_four_board.place_stone(7, 4, Board.WHITE)
+    blocked_four_board.place_stone(7, 5, Board.BLACK)
+    blocked_four_board.place_stone(7, 6, Board.BLACK)
+    blocked_four_board.place_stone(7, 7, Board.BLACK)
+    blocked_four_board.place_stone(7, 8, Board.BLACK)
+
+    open_score = agent._score_player_patterns(open_four_board, Board.BLACK)
+    blocked_score = agent._score_player_patterns(blocked_four_board, Board.BLACK)
+
+    assert open_score > blocked_score
+
+
+def test_minimax_scores_open_three_higher_than_blocked_three():
+    agent = MinimaxAgent(depth=1, seed=42)
+
+    open_three_board = Board(size=15)
+    open_three_board.place_stone(7, 5, Board.BLACK)
+    open_three_board.place_stone(7, 6, Board.BLACK)
+    open_three_board.place_stone(7, 7, Board.BLACK)
+
+    blocked_three_board = Board(size=15)
+    blocked_three_board.place_stone(7, 4, Board.WHITE)
+    blocked_three_board.place_stone(7, 5, Board.BLACK)
+    blocked_three_board.place_stone(7, 6, Board.BLACK)
+    blocked_three_board.place_stone(7, 7, Board.BLACK)
+
+    open_score = agent._score_player_patterns(open_three_board, Board.BLACK)
+    blocked_score = agent._score_player_patterns(blocked_three_board, Board.BLACK)
+
+    assert open_score > blocked_score

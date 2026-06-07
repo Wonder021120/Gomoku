@@ -16,7 +16,12 @@ from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
 from gomoku.minimax_agent import MinimaxAgent
 
 
-def create_agent(agent_name: str, seed: int, minimax_depth: int) -> BaseAgent:
+def create_agent(
+    agent_name: str,
+    seed: int,
+    minimax_depth: int,
+    candidate_radius: int,
+) -> BaseAgent:
     """
     Create an agent by name.
     """
@@ -27,7 +32,11 @@ def create_agent(agent_name: str, seed: int, minimax_depth: int) -> BaseAgent:
         return GreedyAgent(seed=seed)
 
     if agent_name == "minimax":
-        return MinimaxAgent(depth=minimax_depth, seed=seed)
+        return MinimaxAgent(
+            depth=minimax_depth,
+            candidate_radius=candidate_radius,
+            seed=seed,
+        )
 
     raise ValueError(f"Unsupported agent: {agent_name}")
 
@@ -129,6 +138,7 @@ def run_tournament(
     seed: int,
     output_path: Path,
     minimax_depth: int,
+    candidate_radius: int,
 ) -> list[MatchResult]:
     """
     Run an AI-vs-AI tournament.
@@ -144,6 +154,9 @@ def run_tournament(
     if minimax_depth <= 0:
         raise ValueError("Minimax depth must be positive.")
 
+    if candidate_radius <= 0:
+        raise ValueError("Candidate radius must be positive.")
+
     if rule_name != "standard":
         raise NotImplementedError("Only the standard rule is currently supported.")
 
@@ -154,11 +167,13 @@ def run_tournament(
             agent_name=black_agent_name,
             seed=seed + game_index * 2,
             minimax_depth=minimax_depth,
+            candidate_radius=candidate_radius,
         )
         white_agent = create_agent(
             agent_name=white_agent_name,
             seed=seed + game_index * 2 + 1,
             minimax_depth=minimax_depth,
+            candidate_radius=candidate_radius,
         )
 
         result = run_match(
@@ -184,12 +199,16 @@ def run_tournament(
     return results
 
 
-def format_agent_name_for_filename(agent_name: str, minimax_depth: int) -> str:
+def format_agent_name_for_filename(
+    agent_name: str,
+    minimax_depth: int,
+    candidate_radius: int,
+) -> str:
     """
     Format agent name for output filenames.
     """
     if agent_name == "minimax":
-        return f"minimax_d{minimax_depth}"
+        return f"minimax_d{minimax_depth}_r{candidate_radius}"
 
     return agent_name
 
@@ -200,14 +219,17 @@ def build_default_output_path(
     rule_name: str,
     board_size: int,
     minimax_depth: int,
+    candidate_radius: int,
 ) -> Path:
     black_name = format_agent_name_for_filename(
         agent_name=black_agent,
         minimax_depth=minimax_depth,
+        candidate_radius=candidate_radius,
     )
     white_name = format_agent_name_for_filename(
         agent_name=white_agent,
         minimax_depth=minimax_depth,
+        candidate_radius=candidate_radius,
     )
 
     filename = f"{black_name}_vs_{white_name}_{rule_name}_{board_size}x{board_size}.csv"
@@ -272,6 +294,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--candidate-radius",
+        type=int,
+        default=2,
+        help="Candidate move radius for MinimaxAgent.",
+    )
+
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -292,6 +321,7 @@ if __name__ == "__main__":
             rule_name=args.rule,
             board_size=args.board_size,
             minimax_depth=args.minimax_depth,
+            candidate_radius=args.candidate_radius,
         )
 
     run_tournament(
@@ -303,4 +333,5 @@ if __name__ == "__main__":
         seed=args.seed,
         output_path=output_path,
         minimax_depth=args.minimax_depth,
+        candidate_radius=args.candidate_radius,
     )

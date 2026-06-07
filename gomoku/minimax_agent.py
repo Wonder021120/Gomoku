@@ -19,6 +19,8 @@ class MinimaxAgent(BaseAgent):
     A Minimax agent with Alpha-Beta pruning.
 
     This is the first classical AI baseline for the project.
+    The evaluation function uses simple Gomoku pattern scoring:
+    five, open four, blocked four, open three, blocked three, etc.
     """
 
     depth: int = 2
@@ -159,55 +161,103 @@ class MinimaxAgent(BaseAgent):
 
     def _evaluate_board(self, board: Board, player: int) -> float:
         """
-        Evaluate board using simple five-cell window patterns.
+        Evaluate the board using Gomoku pattern scores.
+
+        Positive score means the position is good for player.
+        Negative score means the position is good for the opponent.
         """
         opponent = self._opponent(player)
 
-        player_score = self._score_player_windows(board, player, opponent)
-        opponent_score = self._score_player_windows(board, opponent, player)
+        player_score = self._score_player_patterns(board, player)
+        opponent_score = self._score_player_patterns(board, opponent)
 
-        return player_score - opponent_score
+        # Opponent threats are weighted slightly higher so the agent is more defensive.
+        return player_score - 1.1 * opponent_score
 
-    def _score_player_windows(self, board: Board, player: int, opponent: int) -> float:
+    def _score_player_patterns(self, board: Board, player: int) -> float:
         """
-        Score all length-5 windows for one player.
+        Score all consecutive stone patterns for one player.
         """
         total_score = 0.0
 
-        lines = self._collect_lines(board)
-
-        for line in lines:
-            if len(line) < 5:
-                continue
-
-            for start in range(len(line) - 4):
-                window = line[start : start + 5]
-
-                player_count = window.count(player)
-                opponent_count = window.count(opponent)
-
-                # Blocked window: both players appear, so it is not useful.
-                if player_count > 0 and opponent_count > 0:
-                    continue
-
-                total_score += self._score_window(player_count)
+        for line in self._collect_lines(board):
+            total_score += self._score_line(line, player)
 
         return total_score
 
-    def _score_window(self, player_count: int) -> float:
+    def _score_line(self, line: list[int], player: int) -> float:
         """
-        Score a five-cell window based on how many stones it contains.
+        Score consecutive runs of player's stones in a single line.
+
+        A run is evaluated by:
+        - length of the consecutive stones
+        - number of open ends
+
+        open ends:
+        - 2 means both ends are empty
+        - 1 means one end is empty
+        - 0 means both ends are blocked or outside the board
         """
-        if player_count == 5:
+        score = 0.0
+        index = 0
+        line_length = len(line)
+
+        while index < line_length:
+            if line[index] != player:
+                index += 1
+                continue
+
+            start = index
+
+            while index < line_length and line[index] == player:
+                index += 1
+
+            end = index - 1
+            run_length = end - start + 1
+
+            left_open = start - 1 >= 0 and line[start - 1] == Board.EMPTY
+            right_open = end + 1 < line_length and line[end + 1] == Board.EMPTY
+            open_ends = int(left_open) + int(right_open)
+
+            score += self._score_run(run_length, open_ends)
+
+        return score
+
+    def _score_run(self, run_length: int, open_ends: int) -> float:
+        """
+        Score a consecutive run according to simple Gomoku patterns.
+        """
+        if run_length >= 5:
             return WIN_SCORE
-        if player_count == 4:
-            return 10_000
-        if player_count == 3:
-            return 1_000
-        if player_count == 2:
-            return 100
-        if player_count == 1:
-            return 10
+
+        if run_length == 4:
+            if open_ends == 2:
+                return 100_000  # open four
+            if open_ends == 1:
+                return 10_000  # blocked four
+            return 0
+
+        if run_length == 3:
+            if open_ends == 2:
+                return 5_000  # open three
+            if open_ends == 1:
+                return 1_000  # blocked three
+            return 0
+
+        if run_length == 2:
+            if open_ends == 2:
+                return 300  # open two
+            if open_ends == 1:
+                return 50  # blocked two
+            return 0
+
+        if run_length == 1:
+            if open_ends == 2:
+                return 10
+            if open_ends == 1:
+                return 1
+            return 0
+
         return 0
 
     def _collect_lines(self, board: Board) -> list[list[int]]:
@@ -286,7 +336,7 @@ class MinimaxAgent(BaseAgent):
         candidates: set[Move] = set()
         size = game.board.size
 
-        for (stone_position, _player) in game.board.move_history:
+        for stone_position, _player in game.board.move_history:
             row, col = stone_position
 
             for delta_row in range(-self.candidate_radius, self.candidate_radius + 1):
