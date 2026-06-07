@@ -15,6 +15,7 @@ from experiments.run_match import MatchResult, run_match
 from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
 from gomoku.minimax_agent import MinimaxAgent
 
+
 def create_agent(agent_name: str, seed: int, minimax_depth: int) -> BaseAgent:
     """
     Create an agent by name.
@@ -50,6 +51,8 @@ def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name
         "board_size",
         "black_agent",
         "white_agent",
+        "black_agent_config",
+        "white_agent_config",
         "status",
         "winner",
         "first_player_win",
@@ -137,6 +140,9 @@ def run_tournament(
 
     if board_size <= 0:
         raise ValueError("Board size must be positive.")
+
+    if minimax_depth <= 0:
+        raise ValueError("Minimax depth must be positive.")
 
     if rule_name != "standard":
         raise NotImplementedError("Only the standard rule is currently supported.")
@@ -259,10 +265,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-    "--minimax-depth",
-    type=int,
-    default=1,
-    help="Search depth for MinimaxAgent.",
+        "--minimax-depth",
+        type=int,
+        default=1,
+        help="Search depth for MinimaxAgent.",
     )
 
     parser.add_argument(

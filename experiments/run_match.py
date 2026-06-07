@@ -4,7 +4,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # Allow this script to be run directly from the project root.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +23,8 @@ class MatchResult:
     board_size: int
     black_agent: str
     white_agent: str
+    black_agent_config: str
+    white_agent_config: str
     status: str
     winner: str
     first_player_win: bool
@@ -42,6 +43,21 @@ def format_winner(status: GameStatus) -> str:
     if status == GameStatus.DRAW:
         return "draw"
     return "none"
+
+
+def get_agent_config(agent: BaseAgent) -> str:
+    """
+    Return a compact text description of an agent's configuration.
+
+    This is used in CSV results so that experiments remain traceable.
+    """
+    if hasattr(agent, "depth") and hasattr(agent, "candidate_radius"):
+        return f"depth={agent.depth},candidate_radius={agent.candidate_radius}"
+
+    if hasattr(agent, "seed"):
+        return "seeded"
+
+    return "default"
 
 
 def run_match(
@@ -96,6 +112,8 @@ def run_match(
         board_size=board_size,
         black_agent=black_agent.name,
         white_agent=white_agent.name,
+        black_agent_config=get_agent_config(black_agent),
+        white_agent_config=get_agent_config(white_agent),
         status=game.status.value,
         winner=winner,
         first_player_win=winner == "black",
@@ -119,7 +137,9 @@ def print_match_result(result: MatchResult) -> None:
     print("Game finished")
     print(f"Board size: {result.board_size}x{result.board_size}")
     print(f"Black agent: {result.black_agent}")
+    print(f"Black agent config: {result.black_agent_config}")
     print(f"White agent: {result.white_agent}")
+    print(f"White agent config: {result.white_agent_config}")
     print(f"Status: {result.status}")
     print(f"Winner: {result.winner}")
     print(f"First-player win: {result.first_player_win}")
