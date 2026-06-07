@@ -13,10 +13,9 @@ sys.path.append(str(PROJECT_ROOT))
 
 from experiments.run_match import MatchResult, run_match
 from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
-from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
 from gomoku.minimax_agent import MinimaxAgent
 
-def create_agent(agent_name: str, seed: int) -> BaseAgent:
+def create_agent(agent_name: str, seed: int, minimax_depth: int) -> BaseAgent:
     """
     Create an agent by name.
     """
@@ -27,7 +26,7 @@ def create_agent(agent_name: str, seed: int) -> BaseAgent:
         return GreedyAgent(seed=seed)
 
     if agent_name == "minimax":
-        return MinimaxAgent(depth=1, seed=seed)
+        return MinimaxAgent(depth=minimax_depth, seed=seed)
 
     raise ValueError(f"Unsupported agent: {agent_name}")
 
@@ -126,6 +125,7 @@ def run_tournament(
     white_agent_name: str,
     seed: int,
     output_path: Path,
+    minimax_depth: int,
 ) -> list[MatchResult]:
     """
     Run an AI-vs-AI tournament.
@@ -147,10 +147,12 @@ def run_tournament(
         black_agent = create_agent(
             agent_name=black_agent_name,
             seed=seed + game_index * 2,
+            minimax_depth=minimax_depth,
         )
         white_agent = create_agent(
             agent_name=white_agent_name,
             seed=seed + game_index * 2 + 1,
+            minimax_depth=minimax_depth,
         )
 
         result = run_match(
@@ -237,6 +239,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+    "--minimax-depth",
+    type=int,
+    default=1,
+    help="Search depth for MinimaxAgent.",
+    )
+
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -266,4 +275,5 @@ if __name__ == "__main__":
         white_agent_name=args.white,
         seed=args.seed,
         output_path=output_path,
+        minimax_depth=args.minimax_depth,
     )
