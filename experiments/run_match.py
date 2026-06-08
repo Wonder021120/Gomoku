@@ -72,6 +72,7 @@ def run_match(
     black_agent: BaseAgent,
     white_agent: BaseAgent,
     board_size: int = 15,
+    rule_name: str = "standard",
     verbose: bool = True,
 ) -> MatchResult:
     """
@@ -81,12 +82,13 @@ def run_match(
         black_agent: Agent playing black stones.
         white_agent: Agent playing white stones.
         board_size: Board size.
+        rule_name: Rule name, such as standard or pro.
         verbose: Whether to print the result.
 
     Returns:
         MatchResult containing match statistics.
     """
-    game = Game(board_size=board_size)
+    game = Game(board_size=board_size, rule_name=rule_name)
 
     move_count = 0
     black_total_time = 0.0
@@ -133,7 +135,7 @@ def run_match(
     )
 
     if verbose:
-        print_match_result(result)
+        print_match_result(result, rule_name=rule_name)
         print()
         print("Final board:")
         print(game.board)
@@ -141,8 +143,9 @@ def run_match(
     return result
 
 
-def print_match_result(result: MatchResult) -> None:
+def print_match_result(result: MatchResult, rule_name: str = "standard") -> None:
     print("Game finished")
+    print(f"Rule: {rule_name}")
     print(f"Board size: {result.board_size}x{result.board_size}")
     print(f"Black agent: {result.black_agent}")
     print(f"Black agent config: {result.black_agent_config}")
@@ -158,7 +161,11 @@ def print_match_result(result: MatchResult) -> None:
     print(f"White average decision time: {result.white_avg_time:.6f}s")
 
 
-def run_random_vs_random(board_size: int = 15, seed: int = 42) -> MatchResult:
+def run_random_vs_random(
+    board_size: int = 15,
+    rule_name: str = "standard",
+    seed: int = 42,
+) -> MatchResult:
     black_agent = RandomAgent(seed=seed)
     white_agent = RandomAgent(seed=seed + 1)
 
@@ -166,9 +173,10 @@ def run_random_vs_random(board_size: int = 15, seed: int = 42) -> MatchResult:
         black_agent=black_agent,
         white_agent=white_agent,
         board_size=board_size,
+        rule_name=rule_name,
         verbose=True,
     )
 
 
 if __name__ == "__main__":
-    run_random_vs_random(board_size=15, seed=42)
+    run_random_vs_random(board_size=15, rule_name="standard", seed=42)

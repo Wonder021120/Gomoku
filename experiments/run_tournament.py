@@ -160,8 +160,6 @@ def run_tournament(
 ) -> list[MatchResult]:
     """
     Run an AI-vs-AI tournament.
-
-    Currently only the standard rule is supported.
     """
     if games <= 0:
         raise ValueError("Number of games must be positive.")
@@ -187,8 +185,8 @@ def run_tournament(
     if mcts_rollout_depth <= 0:
         raise ValueError("MCTS rollout depth must be positive.")
 
-    if rule_name != "standard":
-        raise NotImplementedError("Only the standard rule is currently supported.")
+    if rule_name not in ("standard", "pro"):
+        raise NotImplementedError("Only standard and pro rules are currently supported.")
 
     results: list[MatchResult] = []
 
@@ -218,6 +216,7 @@ def run_tournament(
             black_agent=black_agent,
             white_agent=white_agent,
             board_size=board_size,
+            rule_name=rule_name,
             verbose=False,
         )
 
@@ -312,8 +311,8 @@ def parse_args() -> argparse.Namespace:
         "--rule",
         type=str,
         default="standard",
-        choices=["standard"],
-        help="Opening rule. Currently only standard is supported.",
+        choices=["standard", "pro"],
+        help="Opening rule.",
     )
 
     parser.add_argument(
