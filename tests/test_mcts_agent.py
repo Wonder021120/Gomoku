@@ -72,3 +72,20 @@ def test_mcts_agent_blocks_immediate_opponent_win_in_rollout_policy():
     move = agent._select_rollout_move(game)
 
     assert move == (7, 4)
+
+
+def test_mcts_rollout_depth_limit_is_positive():
+    with pytest.raises(ValueError):
+        MCTSAgent(simulations=10, rollout_depth_limit=0)
+
+
+def test_mcts_cutoff_evaluation_returns_valid_value():
+    game = Game(board_size=15)
+    agent = MCTSAgent(simulations=10, rollout_depth_limit=1, seed=42)
+
+    game.board.place_stone(7, 7, Board.BLACK)
+    game.current_player = Board.WHITE
+
+    result = agent._evaluate_cutoff_position(game, Board.BLACK)
+
+    assert result in (0.0, 0.5, 1.0)

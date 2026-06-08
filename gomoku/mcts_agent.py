@@ -7,7 +7,9 @@ from typing import Optional
 
 from gomoku.agents import BaseAgent
 from gomoku.board import Board, Move
-from gomoku.game import Game, GameStatus
+from gomoku.game import Game
+from gomoku.minimax_agent import MinimaxAgent
+from gomoku.win_checker import is_winning_move
 
 
 @dataclass
@@ -28,9 +30,6 @@ class MCTSNode:
         if not self.untried_moves:
             self.untried_moves = self.game.get_legal_moves()
 
-    def is_fully_expanded(self) -> bool:
-        return len(self.untried_moves) == 0
-
     def is_terminal(self) -> bool:
         return self.game.is_over()
 
@@ -38,14 +37,20 @@ class MCTSNode:
 @dataclass
 class MCTSAgent(BaseAgent):
     """
-    A basic Monte Carlo Tree Search agent.
+    A Monte Carlo Tree Search agent.
 
-    This is the second major AI method in the project after Minimax.
+    This implementation uses:
+    - UCB1 selection
+    - candidate move generation
+    - heuristic rollout policy
+    - rollout depth limit
+    - pattern-based evaluation at rollout cutoff
     """
 
-    simulations: int = 100
+    simulations: int = 50
     exploration_weight: float = 1.4
-    candidate_radius: int = 2
+    candidate_radius: int = 1
+    rollout_depth_limit: int = 30
     seed: Optional[int] = None
     name: str = "mcts"
 
@@ -56,7 +61,17 @@ class MCTSAgent(BaseAgent):
             raise ValueError("Exploration weight must be positive.")
         if self.candidate_radius <= 0:
             raise ValueError("Candidate radius must be positive.")
+        if self.rollout_depth_limit <= 0:
+            raise ValueError("Rollout depth limit must be positive.")
+
         self.rng = random.Random(self.seed)
+
+        # Reuse the Minimax pattern evaluator for non-terminal rollout cutoffs.
+        self.evaluator = MinimaxAgent(
+            depth=1,
+            candidate_radius=self.candidate_radius,
+            seed=self.seed,
+        )
 
     def select_move(self, game: Game) -> Move:
         legal_moves = game.get_legal_moves()
@@ -134,7 +149,7 @@ class MCTSAgent(BaseAgent):
             else:
                 exploitation = child.wins / child.visits
                 exploration = self.exploration_weight * math.sqrt(
-                    math.log(node.visits) / child.visits
+                    math.log(max(node.visits, 1)) / child.visits
                 )
                 score = exploitation + exploration
 
@@ -151,23 +166,48 @@ class MCTSAgent(BaseAgent):
         Run a rollout from the given game state.
 
         Returns:
-            1.0 if root_player wins
-            0.5 if draw
-            0.0 if root_player loses
+            1.0 if root_player is estimated to win
+            0.5 if draw or balanced
+            0.0 if root_player is estimated to lose
         """
-        while not game.is_over():
+        rollout_steps = 0
+
+        while not game.is_over() and rollout_steps < self.rollout_depth_limit:
             move = self._select_rollout_move(game)
             game.play_move(move)
+            rollout_steps += 1
 
         winner = game.get_winner()
 
         if winner == root_player:
             return 1.0
 
-        if winner is None:
+        if winner == self._opponent(root_player):
+            return 0.0
+
+        if game.is_over():
             return 0.5
 
-        return 0.0
+        return self._evaluate_cutoff_position(game, root_player)
+
+    def _evaluate_cutoff_position(self, game: Game, root_player: int) -> float:
+        """
+        Estimate a non-terminal rollout cutoff position.
+
+        Uses the Minimax pattern evaluator and maps the score to:
+        - > 0.05 means favourable for root_player
+        - < 0.05 means unfavourable
+        - otherwise balanced
+        """
+        score = self.evaluator._evaluate_board(game.board, root_player)
+
+        if score > 100:
+            return 1.0
+
+        if score < -100:
+            return 0.0
+
+        return 0.5
 
     def _select_rollout_move(self, game: Game) -> Move:
         """
@@ -179,7 +219,7 @@ class MCTSAgent(BaseAgent):
         3. Otherwise choose a random candidate move.
         """
         current_player = game.current_player
-        opponent = Board.WHITE if current_player == Board.BLACK else Board.BLACK
+        opponent = self._opponent(current_player)
 
         winning_move = self._find_immediate_winning_move(game, current_player)
         if winning_move is not None:
@@ -205,8 +245,6 @@ class MCTSAgent(BaseAgent):
             simulated_game = game.copy()
             row, col = move
             simulated_game.board.place_stone(row, col, player)
-
-            from gomoku.win_checker import is_winning_move
 
             if is_winning_move(simulated_game.board, move):
                 return move
@@ -264,3 +302,6 @@ class MCTSAgent(BaseAgent):
             candidates,
             key=lambda move: abs(move[0] - centre) + abs(move[1] - centre),
         )
+
+    def _opponent(self, player: int) -> int:
+        return Board.WHITE if player == Board.BLACK else Board.BLACK
