@@ -51,8 +51,16 @@ def get_agent_config(agent: BaseAgent) -> str:
 
     This is used in CSV results so that experiments remain traceable.
     """
-    if hasattr(agent, "depth") and hasattr(agent, "candidate_radius"):
+    if agent.name == "minimax":
         return f"depth={agent.depth},candidate_radius={agent.candidate_radius}"
+
+    if agent.name == "mcts":
+        return (
+            f"simulations={agent.simulations},"
+            f"exploration_weight={agent.exploration_weight},"
+            f"candidate_radius={agent.candidate_radius},"
+            f"rollout_depth_limit={agent.rollout_depth_limit}"
+        )
 
     if hasattr(agent, "seed"):
         return "seeded"

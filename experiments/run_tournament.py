@@ -13,6 +13,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from experiments.run_match import MatchResult, run_match
 from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
+from gomoku.mcts_agent import MCTSAgent
 from gomoku.minimax_agent import MinimaxAgent
 
 
@@ -20,7 +21,11 @@ def create_agent(
     agent_name: str,
     seed: int,
     minimax_depth: int,
-    candidate_radius: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_exploration_weight: float,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
 ) -> BaseAgent:
     """
     Create an agent by name.
@@ -34,7 +39,16 @@ def create_agent(
     if agent_name == "minimax":
         return MinimaxAgent(
             depth=minimax_depth,
-            candidate_radius=candidate_radius,
+            candidate_radius=minimax_candidate_radius,
+            seed=seed,
+        )
+
+    if agent_name == "mcts":
+        return MCTSAgent(
+            simulations=mcts_simulations,
+            exploration_weight=mcts_exploration_weight,
+            candidate_radius=mcts_candidate_radius,
+            rollout_depth_limit=mcts_rollout_depth,
             seed=seed,
         )
 
@@ -138,7 +152,11 @@ def run_tournament(
     seed: int,
     output_path: Path,
     minimax_depth: int,
-    candidate_radius: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_exploration_weight: float,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
 ) -> list[MatchResult]:
     """
     Run an AI-vs-AI tournament.
@@ -154,8 +172,20 @@ def run_tournament(
     if minimax_depth <= 0:
         raise ValueError("Minimax depth must be positive.")
 
-    if candidate_radius <= 0:
-        raise ValueError("Candidate radius must be positive.")
+    if minimax_candidate_radius <= 0:
+        raise ValueError("Minimax candidate radius must be positive.")
+
+    if mcts_simulations <= 0:
+        raise ValueError("MCTS simulations must be positive.")
+
+    if mcts_exploration_weight <= 0:
+        raise ValueError("MCTS exploration weight must be positive.")
+
+    if mcts_candidate_radius <= 0:
+        raise ValueError("MCTS candidate radius must be positive.")
+
+    if mcts_rollout_depth <= 0:
+        raise ValueError("MCTS rollout depth must be positive.")
 
     if rule_name != "standard":
         raise NotImplementedError("Only the standard rule is currently supported.")
@@ -167,13 +197,21 @@ def run_tournament(
             agent_name=black_agent_name,
             seed=seed + game_index * 2,
             minimax_depth=minimax_depth,
-            candidate_radius=candidate_radius,
+            minimax_candidate_radius=minimax_candidate_radius,
+            mcts_simulations=mcts_simulations,
+            mcts_exploration_weight=mcts_exploration_weight,
+            mcts_candidate_radius=mcts_candidate_radius,
+            mcts_rollout_depth=mcts_rollout_depth,
         )
         white_agent = create_agent(
             agent_name=white_agent_name,
             seed=seed + game_index * 2 + 1,
             minimax_depth=minimax_depth,
-            candidate_radius=candidate_radius,
+            minimax_candidate_radius=minimax_candidate_radius,
+            mcts_simulations=mcts_simulations,
+            mcts_exploration_weight=mcts_exploration_weight,
+            mcts_candidate_radius=mcts_candidate_radius,
+            mcts_rollout_depth=mcts_rollout_depth,
         )
 
         result = run_match(
@@ -202,13 +240,19 @@ def run_tournament(
 def format_agent_name_for_filename(
     agent_name: str,
     minimax_depth: int,
-    candidate_radius: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
 ) -> str:
     """
     Format agent name for output filenames.
     """
     if agent_name == "minimax":
-        return f"minimax_d{minimax_depth}_r{candidate_radius}"
+        return f"minimax_d{minimax_depth}_r{minimax_candidate_radius}"
+
+    if agent_name == "mcts":
+        return f"mcts_s{mcts_simulations}_r{mcts_candidate_radius}_rd{mcts_rollout_depth}"
 
     return agent_name
 
@@ -219,17 +263,26 @@ def build_default_output_path(
     rule_name: str,
     board_size: int,
     minimax_depth: int,
-    candidate_radius: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
 ) -> Path:
     black_name = format_agent_name_for_filename(
         agent_name=black_agent,
         minimax_depth=minimax_depth,
-        candidate_radius=candidate_radius,
+        minimax_candidate_radius=minimax_candidate_radius,
+        mcts_simulations=mcts_simulations,
+        mcts_candidate_radius=mcts_candidate_radius,
+        mcts_rollout_depth=mcts_rollout_depth,
     )
     white_name = format_agent_name_for_filename(
         agent_name=white_agent,
         minimax_depth=minimax_depth,
-        candidate_radius=candidate_radius,
+        minimax_candidate_radius=minimax_candidate_radius,
+        mcts_simulations=mcts_simulations,
+        mcts_candidate_radius=mcts_candidate_radius,
+        mcts_rollout_depth=mcts_rollout_depth,
     )
 
     filename = f"{black_name}_vs_{white_name}_{rule_name}_{board_size}x{board_size}.csv"
@@ -267,7 +320,7 @@ def parse_args() -> argparse.Namespace:
         "--black",
         type=str,
         default="random",
-        choices=["random", "greedy", "minimax"],
+        choices=["random", "greedy", "minimax", "mcts"],
         help="Agent playing black.",
     )
 
@@ -275,7 +328,7 @@ def parse_args() -> argparse.Namespace:
         "--white",
         type=str,
         default="random",
-        choices=["random", "greedy", "minimax"],
+        choices=["random", "greedy", "minimax", "mcts"],
         help="Agent playing white.",
     )
 
@@ -294,10 +347,38 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--candidate-radius",
+        "--minimax-candidate-radius",
         type=int,
         default=2,
         help="Candidate move radius for MinimaxAgent.",
+    )
+
+    parser.add_argument(
+        "--mcts-simulations",
+        type=int,
+        default=20,
+        help="Number of simulations for MCTSAgent.",
+    )
+
+    parser.add_argument(
+        "--mcts-exploration-weight",
+        type=float,
+        default=1.4,
+        help="Exploration weight for MCTSAgent.",
+    )
+
+    parser.add_argument(
+        "--mcts-candidate-radius",
+        type=int,
+        default=1,
+        help="Candidate move radius for MCTSAgent.",
+    )
+
+    parser.add_argument(
+        "--mcts-rollout-depth",
+        type=int,
+        default=20,
+        help="Rollout depth limit for MCTSAgent.",
     )
 
     parser.add_argument(
@@ -321,7 +402,10 @@ if __name__ == "__main__":
             rule_name=args.rule,
             board_size=args.board_size,
             minimax_depth=args.minimax_depth,
-            candidate_radius=args.candidate_radius,
+            minimax_candidate_radius=args.minimax_candidate_radius,
+            mcts_simulations=args.mcts_simulations,
+            mcts_candidate_radius=args.mcts_candidate_radius,
+            mcts_rollout_depth=args.mcts_rollout_depth,
         )
 
     run_tournament(
@@ -333,5 +417,9 @@ if __name__ == "__main__":
         seed=args.seed,
         output_path=output_path,
         minimax_depth=args.minimax_depth,
-        candidate_radius=args.candidate_radius,
+        minimax_candidate_radius=args.minimax_candidate_radius,
+        mcts_simulations=args.mcts_simulations,
+        mcts_exploration_weight=args.mcts_exploration_weight,
+        mcts_candidate_radius=args.mcts_candidate_radius,
+        mcts_rollout_depth=args.mcts_rollout_depth,
     )
