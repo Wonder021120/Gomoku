@@ -25,8 +25,8 @@ class Game:
     """
     Controls the flow of a Gomoku game.
 
-    The game currently supports the standard rule through the rule system.
-    Pro and Swap2 will be added later by extending gomoku.rules.
+    The game uses a rule object so that Standard, Pro, and Swap2 can be
+    supported through the same game loop.
     """
 
     board_size: int = 15

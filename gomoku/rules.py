@@ -46,8 +46,6 @@ class BaseRule(ABC):
     def copy(self) -> "BaseRule":
         """
         Return a copy of the rule object.
-
-        This is useful when Game.copy() is used by Minimax or MCTS.
         """
         return copy.deepcopy(self)
 

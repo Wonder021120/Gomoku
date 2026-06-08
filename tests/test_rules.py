@@ -49,3 +49,21 @@ def test_standard_rule_rejects_outside_move():
 
     with pytest.raises(ValueError):
         rule.validate_move(game, (-1, 0))
+
+
+def test_game_uses_standard_rule_by_default():
+    game = Game(board_size=15)
+
+    assert game.rule.name == "standard"
+    assert game.current_player == Board.BLACK
+
+
+def test_game_copy_preserves_rule():
+    game = Game(board_size=15, rule_name="standard")
+    game.play_move((7, 7))
+
+    copied = game.copy()
+
+    assert copied.rule.name == "standard"
+    assert copied.rule_name == "standard"
+    assert copied.board.grid[7, 7] == Board.BLACK
