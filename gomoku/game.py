@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Optional
 
 from gomoku.board import Board, Move
+from gomoku.rules import BaseRule, create_rule
 from gomoku.win_checker import get_winner
 
 
@@ -23,20 +24,26 @@ class GameStatus(Enum):
 class Game:
     """
     Controls the flow of a Gomoku game.
+
+    The game currently supports the standard rule through the rule system.
+    Pro and Swap2 will be added later by extending gomoku.rules.
     """
 
     board_size: int = 15
+    rule_name: str = "standard"
 
     def __post_init__(self) -> None:
         self.board = Board(size=self.board_size)
-        self.current_player = Board.BLACK
+        self.rule: BaseRule = create_rule(self.rule_name)
+        self.current_player = self.rule.get_initial_player()
         self.last_move: Optional[Move] = None
         self.status = GameStatus.ONGOING
 
     def reset(self) -> None:
         """Reset the game to the initial state."""
         self.board.reset()
-        self.current_player = Board.BLACK
+        self.rule = create_rule(self.rule_name)
+        self.current_player = self.rule.get_initial_player()
         self.last_move = None
         self.status = GameStatus.ONGOING
 
@@ -61,9 +68,13 @@ class Game:
         if self.is_over():
             raise ValueError("Cannot play a move after the game is over.")
 
+        self.rule.validate_move(self, move)
+
         row, col = move
         self.board.place_stone(row, col, self.current_player)
         self.last_move = move
+
+        self.rule.after_move(self, move)
 
         winner = get_winner(self.board, self.last_move)
 
@@ -86,7 +97,18 @@ class Game:
         """Return all legal moves for the current position."""
         if self.is_over():
             return []
-        return self.board.get_legal_moves()
+
+        legal_moves = []
+
+        for move in self.board.get_legal_moves():
+            try:
+                self.rule.validate_move(self, move)
+            except ValueError:
+                continue
+
+            legal_moves.append(move)
+
+        return legal_moves
 
     def get_winner(self) -> Optional[int]:
         """
@@ -103,8 +125,9 @@ class Game:
 
     def copy(self) -> "Game":
         """Return a copy of the game state."""
-        new_game = Game(board_size=self.board_size)
+        new_game = Game(board_size=self.board_size, rule_name=self.rule_name)
         new_game.board = self.board.copy()
+        new_game.rule = self.rule.copy()
         new_game.current_player = self.current_player
         new_game.last_move = self.last_move
         new_game.status = self.status
