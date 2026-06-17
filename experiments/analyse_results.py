@@ -25,18 +25,24 @@ def summarise_file(csv_path: Path) -> dict[str, object]:
     black_wins = int((df["winner"] == "black").sum())
     white_wins = int((df["winner"] == "white").sum())
     draws = int((df["winner"] == "draw").sum())
+
     first_player_wins = int(df["first_player_win"].sum())
 
-    black_agent = str(df["black_agent"].iloc[0])
-    white_agent = str(df["white_agent"].iloc[0])
-    black_agent_config = str(df["black_agent_config"].iloc[0])
-    white_agent_config = str(df["white_agent_config"].iloc[0])
-    rule = str(df["rule"].iloc[0])
-    board_size = int(df["board_size"].iloc[0])
+    rule = _get_first_value(df, "rule", "unknown")
+    board_size = _get_first_value(df, "board_size", "unknown")
+    black_agent = _get_first_value(df, "black_agent", "unknown")
+    white_agent = _get_first_value(df, "white_agent", "unknown")
+    black_agent_config = _get_first_value(df, "black_agent_config", "unknown")
+    white_agent_config = _get_first_value(df, "white_agent_config", "unknown")
 
-    avg_moves = float(df["moves"].mean())
-    avg_black_time = float(df["black_avg_time"].mean())
-    avg_white_time = float(df["white_avg_time"].mean())
+    swap2_choices = "none"
+    swap2_opening_template = "none"
+
+    if "swap2_choice" in df.columns:
+        swap2_choices = _format_value_counts(df["swap2_choice"])
+
+    if "swap2_opening_template" in df.columns:
+        swap2_opening_template = _format_value_counts(df["swap2_opening_template"])
 
     return {
         "source_file": csv_path.name,
@@ -46,7 +52,7 @@ def summarise_file(csv_path: Path) -> dict[str, object]:
         "white_agent": white_agent,
         "black_agent_config": black_agent_config,
         "white_agent_config": white_agent_config,
-        "games": total_games,
+        "total_games": total_games,
         "black_wins": black_wins,
         "white_wins": white_wins,
         "draws": draws,
@@ -55,16 +61,22 @@ def summarise_file(csv_path: Path) -> dict[str, object]:
         "draw_rate": draws / total_games,
         "first_player_wins": first_player_wins,
         "first_player_win_rate": first_player_wins / total_games,
-        "avg_moves": avg_moves,
-        "avg_black_time": avg_black_time,
-        "avg_white_time": avg_white_time,
-        "avg_decision_time": (avg_black_time + avg_white_time) / 2,
+        "avg_moves": float(df["moves"].mean()),
+        "min_moves": int(df["moves"].min()),
+        "max_moves": int(df["moves"].max()),
+        "avg_black_decision_time": float(df["black_avg_time"].mean()),
+        "avg_white_decision_time": float(df["white_avg_time"].mean()),
+        "avg_decision_time_overall": float(
+            (df["black_avg_time"].mean() + df["white_avg_time"].mean()) / 2
+        ),
+        "swap2_choices": swap2_choices,
+        "swap2_opening_template": swap2_opening_template,
     }
 
 
 def analyse_results(input_dir: Path, output_path: Path) -> pd.DataFrame:
     """
-    Analyse all CSV files in input_dir and save a summary CSV.
+    Analyse all raw tournament CSV files in input_dir.
     """
     csv_files = sorted(input_dir.glob("*.csv"))
 
@@ -75,12 +87,13 @@ def analyse_results(input_dir: Path, output_path: Path) -> pd.DataFrame:
 
     for csv_path in csv_files:
         try:
-            summaries.append(summarise_file(csv_path))
+            summary = summarise_file(csv_path)
+            summaries.append(summary)
         except Exception as error:
             print(f"Skipping {csv_path}: {error}")
 
     if not summaries:
-        raise ValueError("No valid CSV files could be summarised.")
+        raise ValueError("No valid CSV files could be analysed.")
 
     summary_df = pd.DataFrame(summaries)
 
@@ -92,46 +105,76 @@ def analyse_results(input_dir: Path, output_path: Path) -> pd.DataFrame:
 
 def print_summary_table(summary_df: pd.DataFrame) -> None:
     """
-    Print a compact summary table to the terminal.
+    Print a readable summary table to the terminal.
     """
-    columns = [
+    display_columns = [
         "source_file",
         "rule",
-        "board_size",
         "black_agent",
         "white_agent",
-        "games",
+        "total_games",
         "black_win_rate",
         "white_win_rate",
         "draw_rate",
         "first_player_win_rate",
         "avg_moves",
-        "avg_decision_time",
+        "avg_decision_time_overall",
+        "swap2_choices",
     ]
 
-    display_df = summary_df[columns].copy()
+    available_columns = [
+        column for column in display_columns if column in summary_df.columns
+    ]
 
-    percentage_columns = [
+    printable_df = summary_df[available_columns].copy()
+
+    rate_columns = [
         "black_win_rate",
         "white_win_rate",
         "draw_rate",
         "first_player_win_rate",
     ]
 
-    for column in percentage_columns:
-        display_df[column] = display_df[column].map(lambda value: f"{value:.2%}")
+    for column in rate_columns:
+        if column in printable_df.columns:
+            printable_df[column] = printable_df[column].map(lambda value: f"{value:.2%}")
 
-    display_df["avg_moves"] = display_df["avg_moves"].map(lambda value: f"{value:.2f}")
-    display_df["avg_decision_time"] = display_df["avg_decision_time"].map(
-        lambda value: f"{value:.6f}s"
-    )
+    if "avg_moves" in printable_df.columns:
+        printable_df["avg_moves"] = printable_df["avg_moves"].map(lambda value: f"{value:.2f}")
 
-    print(display_df.to_string(index=False))
+    if "avg_decision_time_overall" in printable_df.columns:
+        printable_df["avg_decision_time_overall"] = printable_df[
+            "avg_decision_time_overall"
+        ].map(lambda value: f"{value:.6f}s")
+
+    print(printable_df.to_string(index=False))
+
+
+def _get_first_value(df: pd.DataFrame, column: str, default: object) -> object:
+    """
+    Safely get the first value of a column.
+    """
+    if column not in df.columns:
+        return default
+
+    if df[column].empty:
+        return default
+
+    return df[column].iloc[0]
+
+
+def _format_value_counts(series: pd.Series) -> str:
+    """
+    Format value counts as a compact string.
+    """
+    counts = series.fillna("none").value_counts()
+
+    return "; ".join(f"{key}:{value}" for key, value in counts.items())
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analyse Gomoku tournament CSV results."
+        description="Analyse raw Gomoku tournament result CSV files."
     )
 
     parser.add_argument(
@@ -145,7 +188,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=Path("results/processed/summary.csv"),
-        help="Path to save the processed summary CSV.",
+        help="Path to save the summary CSV.",
     )
 
     return parser.parse_args()
@@ -159,7 +202,6 @@ if __name__ == "__main__":
         output_path=args.output,
     )
 
-    print("Analysis finished")
-    print(f"Summary saved to: {args.output}")
-    print()
     print_summary_table(summary)
+    print()
+    print(f"Summary saved to: {args.output}")
