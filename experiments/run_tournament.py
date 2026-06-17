@@ -76,6 +76,9 @@ def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name
         "white_agent",
         "black_agent_config",
         "white_agent_config",
+        "swap2_choice",
+        "swap2_opening_template",
+        "swap2_opening_moves",
         "status",
         "winner",
         "first_player_win",
@@ -185,8 +188,8 @@ def run_tournament(
     if mcts_rollout_depth <= 0:
         raise ValueError("MCTS rollout depth must be positive.")
 
-    if rule_name not in ("standard", "pro"):
-        raise NotImplementedError("Only standard and pro rules are currently supported.")
+    if rule_name not in ("standard", "pro", "swap2"):
+        raise NotImplementedError("Only standard, pro, and swap2 rules are currently supported.")
 
     results: list[MatchResult] = []
 
@@ -311,7 +314,7 @@ def parse_args() -> argparse.Namespace:
         "--rule",
         type=str,
         default="standard",
-        choices=["standard", "pro"],
+        choices=["standard", "pro", "swap2"],
         help="Opening rule.",
     )
 
