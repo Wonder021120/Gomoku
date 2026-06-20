@@ -28,6 +28,9 @@ results/figures/
 models/
 checkpoints/
 self_play_data/
+data/self_play/
+*.pt
+*.pth
 
 # Logs
 *.log
