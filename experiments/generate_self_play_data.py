@@ -6,7 +6,7 @@ import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Any
 
 import numpy as np
 
@@ -16,8 +16,9 @@ sys.path.append(str(PROJECT_ROOT))
 
 from gomoku.agents import GreedyAgent, RandomAgent
 from gomoku.board import Board
-from gomoku.game import Game, GameStatus
+from gomoku.game import Game
 from gomoku.neural_network import encode_board_state, move_to_action
+from gomoku.nn_mcts_agent import NNMCTSAgent
 
 
 @dataclass
@@ -50,18 +51,38 @@ class SelfPlaySample:
     value_target: float = 0.0
 
 
-def create_agent(agent_name: str, seed: int):
+def create_agent(
+    agent_name: str,
+    seed: int,
+    board_size: int,
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
+):
     """
-    Create a simple agent for early self-play data generation.
+    Create an agent for self-play data generation.
 
-    This is only for initial NN training pipeline validation.
-    Later, NN-MCTS will generate stronger self-play data.
+    Early pipeline validation can use random or greedy.
+    NN-MCTS self-play is used for the later neural training loop.
     """
     if agent_name == "random":
         return RandomAgent(seed=seed)
 
     if agent_name == "greedy":
         return GreedyAgent(seed=seed)
+
+    if agent_name == "nn_mcts":
+        return NNMCTSAgent(
+            board_size=board_size,
+            simulations=nn_mcts_simulations,
+            checkpoint_path=nn_mcts_checkpoint,
+            exploration_weight=nn_mcts_exploration_weight,
+            candidate_radius=nn_mcts_candidate_radius,
+            device=nn_mcts_device,
+            seed=seed,
+        )
 
     raise ValueError(f"Unknown self-play agent: {agent_name}")
 
@@ -94,7 +115,12 @@ def play_one_self_play_game(
     rule_name: str,
     agent_name: str,
     seed: int,
-    max_moves: int | None = None,
+    max_moves: int | None,
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
 ) -> list[SelfPlaySample]:
     """
     Run one self-play game and return training samples.
@@ -103,8 +129,27 @@ def play_one_self_play_game(
     """
     game = Game(board_size=board_size, rule_name=rule_name)
 
-    black_agent = create_agent(agent_name, seed=seed)
-    white_agent = create_agent(agent_name, seed=seed + 1)
+    black_agent = create_agent(
+        agent_name=agent_name,
+        seed=seed,
+        board_size=board_size,
+        nn_mcts_simulations=nn_mcts_simulations,
+        nn_mcts_checkpoint=nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=nn_mcts_candidate_radius,
+        nn_mcts_device=nn_mcts_device,
+    )
+
+    white_agent = create_agent(
+        agent_name=agent_name,
+        seed=seed + 1,
+        board_size=board_size,
+        nn_mcts_simulations=nn_mcts_simulations,
+        nn_mcts_checkpoint=nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=nn_mcts_candidate_radius,
+        nn_mcts_device=nn_mcts_device,
+    )
 
     samples: list[SelfPlaySample] = []
 
@@ -147,7 +192,12 @@ def generate_self_play_dataset(
     rule_name: str,
     agent_name: str,
     seed: int,
-    max_moves: int | None = None,
+    max_moves: int | None,
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
 ) -> list[SelfPlaySample]:
     """
     Generate self-play samples from multiple games.
@@ -166,6 +216,11 @@ def generate_self_play_dataset(
             agent_name=agent_name,
             seed=game_seed,
             max_moves=max_moves,
+            nn_mcts_simulations=nn_mcts_simulations,
+            nn_mcts_checkpoint=nn_mcts_checkpoint,
+            nn_mcts_exploration_weight=nn_mcts_exploration_weight,
+            nn_mcts_candidate_radius=nn_mcts_candidate_radius,
+            nn_mcts_device=nn_mcts_device,
         )
 
         all_samples.extend(samples)
@@ -181,7 +236,7 @@ def generate_self_play_dataset(
 def save_dataset(
     samples: list[SelfPlaySample],
     output_path: Path,
-    metadata: dict,
+    metadata: dict[str, Any],
 ) -> None:
     """
     Save self-play samples as a compressed numpy dataset.
@@ -192,9 +247,11 @@ def save_dataset(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     states = np.stack([sample.state for sample in samples]).astype(np.float32)
+
     policy_targets = np.stack(
         [sample.policy_target for sample in samples]
     ).astype(np.float32)
+
     value_targets = np.array(
         [[sample.value_target] for sample in samples],
         dtype=np.float32,
@@ -264,8 +321,8 @@ def parse_args() -> argparse.Namespace:
         "--agent",
         type=str,
         default="greedy",
-        choices=["random", "greedy"],
-        help="Agent used to generate initial self-play data.",
+        choices=["random", "greedy", "nn_mcts"],
+        help="Agent used to generate self-play data.",
     )
 
     parser.add_argument(
@@ -296,6 +353,41 @@ def parse_args() -> argparse.Namespace:
         help="Optional explicit output file path.",
     )
 
+    parser.add_argument(
+        "--nn-mcts-simulations",
+        type=int,
+        default=10,
+        help="NN-MCTS simulations per move when --agent nn_mcts is used.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint path for NN-MCTS self-play.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-exploration-weight",
+        type=float,
+        default=1.5,
+        help="NN-MCTS PUCT exploration weight.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-candidate-radius",
+        type=int,
+        default=2,
+        help="NN-MCTS candidate radius.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-device",
+        type=str,
+        default="auto",
+        help="NN-MCTS device: auto, cpu, or cuda.",
+    )
+
     return parser.parse_args()
 
 
@@ -307,6 +399,9 @@ if __name__ == "__main__":
 
     if args.board_size <= 0:
         raise ValueError("--board-size must be positive.")
+
+    if args.nn_mcts_simulations <= 0:
+        raise ValueError("--nn-mcts-simulations must be positive.")
 
     output_path = args.output
 
@@ -327,6 +422,11 @@ if __name__ == "__main__":
         agent_name=args.agent,
         seed=args.seed,
         max_moves=args.max_moves,
+        nn_mcts_simulations=args.nn_mcts_simulations,
+        nn_mcts_checkpoint=args.nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
+        nn_mcts_device=args.nn_mcts_device,
     )
 
     metadata = {
@@ -337,6 +437,11 @@ if __name__ == "__main__":
         "seed": args.seed,
         "max_moves": args.max_moves,
         "num_samples": len(samples),
+        "nn_mcts_simulations": args.nn_mcts_simulations,
+        "nn_mcts_checkpoint": args.nn_mcts_checkpoint,
+        "nn_mcts_exploration_weight": args.nn_mcts_exploration_weight,
+        "nn_mcts_candidate_radius": args.nn_mcts_candidate_radius,
+        "nn_mcts_device": args.nn_mcts_device,
     }
 
     save_dataset(
