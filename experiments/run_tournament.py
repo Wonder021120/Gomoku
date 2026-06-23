@@ -3,32 +3,39 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
-from dataclasses import asdict
 from pathlib import Path
-from statistics import mean
+from typing import Any
 
 # Allow this script to be run directly from the project root.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
 
-from experiments.run_match import MatchResult, run_match
-from gomoku.agents import BaseAgent, GreedyAgent, RandomAgent
+from gomoku.agents import GreedyAgent, RandomAgent
 from gomoku.mcts_agent import MCTSAgent
 from gomoku.minimax_agent import MinimaxAgent
+from gomoku.nn_mcts_agent import NNMCTSAgent
+
+from experiments.run_match import MatchResult, run_match
 
 
 def create_agent(
     agent_name: str,
     seed: int,
+    board_size: int,
     minimax_depth: int,
     minimax_candidate_radius: int,
     mcts_simulations: int,
     mcts_exploration_weight: float,
     mcts_candidate_radius: int,
     mcts_rollout_depth: int,
-) -> BaseAgent:
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
+):
     """
-    Create an agent by name.
+    Create an AI agent by name.
     """
     if agent_name == "random":
         return RandomAgent(seed=seed)
@@ -52,21 +59,168 @@ def create_agent(
             seed=seed,
         )
 
-    raise ValueError(f"Unsupported agent: {agent_name}")
+    if agent_name == "nn_mcts":
+        return NNMCTSAgent(
+            board_size=board_size,
+            simulations=nn_mcts_simulations,
+            checkpoint_path=nn_mcts_checkpoint,
+            exploration_weight=nn_mcts_exploration_weight,
+            candidate_radius=nn_mcts_candidate_radius,
+            device=nn_mcts_device,
+            seed=seed,
+        )
+
+    raise ValueError(f"Unknown agent: {agent_name}")
 
 
-def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name: str) -> None:
+def build_agent_config(
+    agent_name: str,
+    minimax_depth: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_exploration_weight: float,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
+) -> str:
     """
-    Save match results to a CSV file.
+    Build a readable config string for CSV logging.
     """
+    if agent_name == "random":
+        return "random"
+
+    if agent_name == "greedy":
+        return "greedy"
+
+    if agent_name == "minimax":
+        return (
+            f"depth={minimax_depth};"
+            f"candidate_radius={minimax_candidate_radius}"
+        )
+
+    if agent_name == "mcts":
+        return (
+            f"simulations={mcts_simulations};"
+            f"exploration_weight={mcts_exploration_weight};"
+            f"candidate_radius={mcts_candidate_radius};"
+            f"rollout_depth={mcts_rollout_depth}"
+        )
+
+    if agent_name == "nn_mcts":
+        checkpoint_text = nn_mcts_checkpoint if nn_mcts_checkpoint is not None else "none"
+
+        return (
+            f"simulations={nn_mcts_simulations};"
+            f"checkpoint={checkpoint_text};"
+            f"exploration_weight={nn_mcts_exploration_weight};"
+            f"candidate_radius={nn_mcts_candidate_radius};"
+            f"device={nn_mcts_device}"
+        )
+
+    return "unknown"
+
+
+def run_tournament(
+    games: int,
+    board_size: int,
+    rule_name: str,
+    black_agent_name: str,
+    white_agent_name: str,
+    seed: int,
+    minimax_depth: int,
+    minimax_candidate_radius: int,
+    mcts_simulations: int,
+    mcts_exploration_weight: float,
+    mcts_candidate_radius: int,
+    mcts_rollout_depth: int,
+    nn_mcts_simulations: int,
+    nn_mcts_checkpoint: str | None,
+    nn_mcts_exploration_weight: float,
+    nn_mcts_candidate_radius: int,
+    nn_mcts_device: str,
+) -> list[MatchResult]:
+    """
+    Run multiple games and return match results.
+    """
+    if games <= 0:
+        raise ValueError("games must be positive.")
+
+    results: list[MatchResult] = []
+
+    for game_index in range(games):
+        game_seed = seed + game_index * 100
+
+        black_agent = create_agent(
+            agent_name=black_agent_name,
+            seed=game_seed,
+            board_size=board_size,
+            minimax_depth=minimax_depth,
+            minimax_candidate_radius=minimax_candidate_radius,
+            mcts_simulations=mcts_simulations,
+            mcts_exploration_weight=mcts_exploration_weight,
+            mcts_candidate_radius=mcts_candidate_radius,
+            mcts_rollout_depth=mcts_rollout_depth,
+            nn_mcts_simulations=nn_mcts_simulations,
+            nn_mcts_checkpoint=nn_mcts_checkpoint,
+            nn_mcts_exploration_weight=nn_mcts_exploration_weight,
+            nn_mcts_candidate_radius=nn_mcts_candidate_radius,
+            nn_mcts_device=nn_mcts_device,
+        )
+
+        white_agent = create_agent(
+            agent_name=white_agent_name,
+            seed=game_seed + 1,
+            board_size=board_size,
+            minimax_depth=minimax_depth,
+            minimax_candidate_radius=minimax_candidate_radius,
+            mcts_simulations=mcts_simulations,
+            mcts_exploration_weight=mcts_exploration_weight,
+            mcts_candidate_radius=mcts_candidate_radius,
+            mcts_rollout_depth=mcts_rollout_depth,
+            nn_mcts_simulations=nn_mcts_simulations,
+            nn_mcts_checkpoint=nn_mcts_checkpoint,
+            nn_mcts_exploration_weight=nn_mcts_exploration_weight,
+            nn_mcts_candidate_radius=nn_mcts_candidate_radius,
+            nn_mcts_device=nn_mcts_device,
+        )
+
+        result = run_match(
+            black_agent=black_agent,
+            white_agent=white_agent,
+            board_size=board_size,
+            rule_name=rule_name,
+            verbose=False,
+        )
+
+        results.append(result)
+
+        print(
+            f"Game {game_index + 1}/{games} completed | "
+            f"winner={result.winner} | "
+            f"moves={result.moves}"
+        )
+
+    return results
+
+
+def save_results_to_csv(
+    results: list[MatchResult],
+    output_path: Path,
+    rule_name: str,
+    black_agent_config: str,
+    white_agent_config: str,
+) -> None:
+    """
+    Save tournament results to CSV.
+    """
+    if not results:
+        raise ValueError("No results to save.")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    rows = []
-    for game_id, result in enumerate(results, start=1):
-        row = asdict(result)
-        row["game_id"] = game_id
-        row["rule"] = rule_name
-        rows.append(row)
 
     fieldnames = [
         "game_id",
@@ -92,214 +246,63 @@ def save_results_to_csv(results: list[MatchResult], output_path: Path, rule_name
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
 
+        for game_id, result in enumerate(results, start=1):
+            writer.writerow(
+                {
+                    "game_id": game_id,
+                    "rule": rule_name,
+                    "board_size": result.board_size,
+                    "black_agent": result.black_agent,
+                    "white_agent": result.white_agent,
+                    "black_agent_config": black_agent_config,
+                    "white_agent_config": white_agent_config,
+                    "swap2_choice": result.swap2_choice,
+                    "swap2_opening_template": result.swap2_opening_template,
+                    "swap2_opening_moves": result.swap2_opening_moves,
+                    "status": result.status,
+                    "winner": result.winner,
+                    "first_player_win": result.first_player_win,
+                    "moves": result.moves,
+                    "black_total_time": result.black_total_time,
+                    "white_total_time": result.white_total_time,
+                    "black_avg_time": result.black_avg_time,
+                    "white_avg_time": result.white_avg_time,
+                }
+            )
 
-def summarise_results(results: list[MatchResult]) -> dict[str, float | int]:
-    """
-    Calculate summary statistics for a list of match results.
-    """
-    total_games = len(results)
-
-    black_wins = sum(1 for result in results if result.winner == "black")
-    white_wins = sum(1 for result in results if result.winner == "white")
-    draws = sum(1 for result in results if result.winner == "draw")
-    first_player_wins = sum(1 for result in results if result.first_player_win)
-
-    avg_moves = mean(result.moves for result in results) if results else 0.0
-    avg_black_time = mean(result.black_avg_time for result in results) if results else 0.0
-    avg_white_time = mean(result.white_avg_time for result in results) if results else 0.0
-
-    return {
-        "total_games": total_games,
-        "black_wins": black_wins,
-        "white_wins": white_wins,
-        "draws": draws,
-        "first_player_wins": first_player_wins,
-        "first_player_win_rate": first_player_wins / total_games if total_games > 0 else 0.0,
-        "avg_moves": avg_moves,
-        "avg_black_time": avg_black_time,
-        "avg_white_time": avg_white_time,
-    }
-
-
-def print_summary(
-    summary: dict[str, float | int],
-    rule_name: str,
-    black_agent_name: str,
-    white_agent_name: str,
-    output_path: Path,
-) -> None:
-    print("Tournament finished")
-    print(f"Rule: {rule_name}")
-    print(f"Black agent: {black_agent_name}")
-    print(f"White agent: {white_agent_name}")
-    print(f"Games: {summary['total_games']}")
-    print(f"Black wins: {summary['black_wins']}")
-    print(f"White wins: {summary['white_wins']}")
-    print(f"Draws: {summary['draws']}")
-    print(f"First-player wins: {summary['first_player_wins']}")
-    print(f"First-player win rate: {summary['first_player_win_rate']:.2%}")
-    print(f"Average moves: {summary['avg_moves']:.2f}")
-    print(f"Average black decision time: {summary['avg_black_time']:.6f}s")
-    print(f"Average white decision time: {summary['avg_white_time']:.6f}s")
-    print(f"CSV saved to: {output_path}")
-
-
-def run_tournament(
-    games: int,
-    board_size: int,
-    rule_name: str,
-    black_agent_name: str,
-    white_agent_name: str,
-    seed: int,
-    output_path: Path,
-    minimax_depth: int,
-    minimax_candidate_radius: int,
-    mcts_simulations: int,
-    mcts_exploration_weight: float,
-    mcts_candidate_radius: int,
-    mcts_rollout_depth: int,
-) -> list[MatchResult]:
-    """
-    Run an AI-vs-AI tournament.
-    """
-    if games <= 0:
-        raise ValueError("Number of games must be positive.")
-
-    if board_size <= 0:
-        raise ValueError("Board size must be positive.")
-
-    if minimax_depth <= 0:
-        raise ValueError("Minimax depth must be positive.")
-
-    if minimax_candidate_radius <= 0:
-        raise ValueError("Minimax candidate radius must be positive.")
-
-    if mcts_simulations <= 0:
-        raise ValueError("MCTS simulations must be positive.")
-
-    if mcts_exploration_weight <= 0:
-        raise ValueError("MCTS exploration weight must be positive.")
-
-    if mcts_candidate_radius <= 0:
-        raise ValueError("MCTS candidate radius must be positive.")
-
-    if mcts_rollout_depth <= 0:
-        raise ValueError("MCTS rollout depth must be positive.")
-
-    if rule_name not in ("standard", "pro", "swap2"):
-        raise NotImplementedError("Only standard, pro, and swap2 rules are currently supported.")
-
-    results: list[MatchResult] = []
-
-    for game_index in range(games):
-        black_agent = create_agent(
-            agent_name=black_agent_name,
-            seed=seed + game_index * 2,
-            minimax_depth=minimax_depth,
-            minimax_candidate_radius=minimax_candidate_radius,
-            mcts_simulations=mcts_simulations,
-            mcts_exploration_weight=mcts_exploration_weight,
-            mcts_candidate_radius=mcts_candidate_radius,
-            mcts_rollout_depth=mcts_rollout_depth,
-        )
-        white_agent = create_agent(
-            agent_name=white_agent_name,
-            seed=seed + game_index * 2 + 1,
-            minimax_depth=minimax_depth,
-            minimax_candidate_radius=minimax_candidate_radius,
-            mcts_simulations=mcts_simulations,
-            mcts_exploration_weight=mcts_exploration_weight,
-            mcts_candidate_radius=mcts_candidate_radius,
-            mcts_rollout_depth=mcts_rollout_depth,
-        )
-
-        result = run_match(
-            black_agent=black_agent,
-            white_agent=white_agent,
-            board_size=board_size,
-            rule_name=rule_name,
-            verbose=False,
-        )
-
-        results.append(result)
-
-    save_results_to_csv(results, output_path=output_path, rule_name=rule_name)
-
-    summary = summarise_results(results)
-    print_summary(
-        summary=summary,
-        rule_name=rule_name,
-        black_agent_name=black_agent_name,
-        white_agent_name=white_agent_name,
-        output_path=output_path,
-    )
-
-    return results
-
-
-def format_agent_name_for_filename(
-    agent_name: str,
-    minimax_depth: int,
-    minimax_candidate_radius: int,
-    mcts_simulations: int,
-    mcts_candidate_radius: int,
-    mcts_rollout_depth: int,
-) -> str:
-    """
-    Format agent name for output filenames.
-    """
-    if agent_name == "minimax":
-        return f"minimax_d{minimax_depth}_r{minimax_candidate_radius}"
-
-    if agent_name == "mcts":
-        return f"mcts_s{mcts_simulations}_r{mcts_candidate_radius}_rd{mcts_rollout_depth}"
-
-    return agent_name
+    print(f"Saved results to: {output_path}")
 
 
 def build_default_output_path(
-    black_agent: str,
-    white_agent: str,
+    output_dir: Path,
     rule_name: str,
+    black_agent_name: str,
+    white_agent_name: str,
+    games: int,
     board_size: int,
-    minimax_depth: int,
-    minimax_candidate_radius: int,
-    mcts_simulations: int,
-    mcts_candidate_radius: int,
-    mcts_rollout_depth: int,
+    seed: int,
 ) -> Path:
-    black_name = format_agent_name_for_filename(
-        agent_name=black_agent,
-        minimax_depth=minimax_depth,
-        minimax_candidate_radius=minimax_candidate_radius,
-        mcts_simulations=mcts_simulations,
-        mcts_candidate_radius=mcts_candidate_radius,
-        mcts_rollout_depth=mcts_rollout_depth,
-    )
-    white_name = format_agent_name_for_filename(
-        agent_name=white_agent,
-        minimax_depth=minimax_depth,
-        minimax_candidate_radius=minimax_candidate_radius,
-        mcts_simulations=mcts_simulations,
-        mcts_candidate_radius=mcts_candidate_radius,
-        mcts_rollout_depth=mcts_rollout_depth,
+    """
+    Build default output path for tournament CSV.
+    """
+    filename = (
+        f"{rule_name}_{black_agent_name}_vs_{white_agent_name}_"
+        f"{board_size}x{board_size}_{games}games_seed{seed}.csv"
     )
 
-    filename = f"{black_name}_vs_{white_name}_{rule_name}_{board_size}x{board_size}.csv"
-    return Path("results/raw") / filename
+    return output_dir / filename
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a Gomoku AI-vs-AI tournament."
+        description="Run Gomoku tournaments between AI agents."
     )
 
     parser.add_argument(
         "--games",
         type=int,
-        default=100,
+        default=10,
         help="Number of games to run.",
     )
 
@@ -307,7 +310,7 @@ def parse_args() -> argparse.Namespace:
         "--board-size",
         type=int,
         default=15,
-        help="Board size. Default is 15.",
+        help="Board size.",
     )
 
     parser.add_argument(
@@ -322,72 +325,114 @@ def parse_args() -> argparse.Namespace:
         "--black",
         type=str,
         default="random",
-        choices=["random", "greedy", "minimax", "mcts"],
-        help="Agent playing black.",
+        choices=["random", "greedy", "minimax", "mcts", "nn_mcts"],
+        help="Black agent.",
     )
 
     parser.add_argument(
         "--white",
         type=str,
         default="random",
-        choices=["random", "greedy", "minimax", "mcts"],
-        help="Agent playing white.",
+        choices=["random", "greedy", "minimax", "mcts", "nn_mcts"],
+        help="White agent.",
     )
 
     parser.add_argument(
         "--seed",
         type=int,
-        default=1000,
-        help="Base random seed.",
+        default=2026,
+        help="Random seed.",
     )
 
     parser.add_argument(
-        "--minimax-depth",
-        type=int,
-        default=1,
-        help="Search depth for MinimaxAgent.",
-    )
-
-    parser.add_argument(
-        "--minimax-candidate-radius",
-        type=int,
-        default=2,
-        help="Candidate move radius for MinimaxAgent.",
-    )
-
-    parser.add_argument(
-        "--mcts-simulations",
-        type=int,
-        default=20,
-        help="Number of simulations for MCTSAgent.",
-    )
-
-    parser.add_argument(
-        "--mcts-exploration-weight",
-        type=float,
-        default=1.4,
-        help="Exploration weight for MCTSAgent.",
-    )
-
-    parser.add_argument(
-        "--mcts-candidate-radius",
-        type=int,
-        default=1,
-        help="Candidate move radius for MCTSAgent.",
-    )
-
-    parser.add_argument(
-        "--mcts-rollout-depth",
-        type=int,
-        default=20,
-        help="Rollout depth limit for MCTSAgent.",
+        "--output-dir",
+        type=Path,
+        default=Path("results/raw"),
+        help="Directory to save raw CSV results.",
     )
 
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Path to output CSV file. If omitted, a default filename is used.",
+        help="Optional explicit output CSV path.",
+    )
+
+    parser.add_argument(
+        "--minimax-depth",
+        type=int,
+        default=2,
+        help="Minimax search depth.",
+    )
+
+    parser.add_argument(
+        "--minimax-candidate-radius",
+        type=int,
+        default=1,
+        help="Minimax candidate radius.",
+    )
+
+    parser.add_argument(
+        "--mcts-simulations",
+        type=int,
+        default=50,
+        help="MCTS simulations per move.",
+    )
+
+    parser.add_argument(
+        "--mcts-exploration-weight",
+        type=float,
+        default=1.4,
+        help="MCTS exploration weight.",
+    )
+
+    parser.add_argument(
+        "--mcts-candidate-radius",
+        type=int,
+        default=1,
+        help="MCTS candidate radius.",
+    )
+
+    parser.add_argument(
+        "--mcts-rollout-depth",
+        type=int,
+        default=30,
+        help="MCTS rollout depth limit.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-simulations",
+        type=int,
+        default=25,
+        help="NN-MCTS simulations per move.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-checkpoint",
+        type=str,
+        default=None,
+        help="Optional NN-MCTS checkpoint path.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-exploration-weight",
+        type=float,
+        default=1.5,
+        help="NN-MCTS PUCT exploration weight.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-candidate-radius",
+        type=int,
+        default=2,
+        help="NN-MCTS candidate radius.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-device",
+        type=str,
+        default="auto",
+        help="NN-MCTS device: auto, cpu, or cuda.",
     )
 
     return parser.parse_args()
@@ -396,32 +441,73 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-    output_path = args.output
-    if output_path is None:
-        output_path = build_default_output_path(
-            black_agent=args.black,
-            white_agent=args.white,
-            rule_name=args.rule,
-            board_size=args.board_size,
-            minimax_depth=args.minimax_depth,
-            minimax_candidate_radius=args.minimax_candidate_radius,
-            mcts_simulations=args.mcts_simulations,
-            mcts_candidate_radius=args.mcts_candidate_radius,
-            mcts_rollout_depth=args.mcts_rollout_depth,
-        )
-
-    run_tournament(
-        games=args.games,
-        board_size=args.board_size,
-        rule_name=args.rule,
-        black_agent_name=args.black,
-        white_agent_name=args.white,
-        seed=args.seed,
-        output_path=output_path,
+    black_agent_config = build_agent_config(
+        agent_name=args.black,
         minimax_depth=args.minimax_depth,
         minimax_candidate_radius=args.minimax_candidate_radius,
         mcts_simulations=args.mcts_simulations,
         mcts_exploration_weight=args.mcts_exploration_weight,
         mcts_candidate_radius=args.mcts_candidate_radius,
         mcts_rollout_depth=args.mcts_rollout_depth,
+        nn_mcts_simulations=args.nn_mcts_simulations,
+        nn_mcts_checkpoint=args.nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
+        nn_mcts_device=args.nn_mcts_device,
+    )
+
+    white_agent_config = build_agent_config(
+        agent_name=args.white,
+        minimax_depth=args.minimax_depth,
+        minimax_candidate_radius=args.minimax_candidate_radius,
+        mcts_simulations=args.mcts_simulations,
+        mcts_exploration_weight=args.mcts_exploration_weight,
+        mcts_candidate_radius=args.mcts_candidate_radius,
+        mcts_rollout_depth=args.mcts_rollout_depth,
+        nn_mcts_simulations=args.nn_mcts_simulations,
+        nn_mcts_checkpoint=args.nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
+        nn_mcts_device=args.nn_mcts_device,
+    )
+
+    output_path = args.output
+
+    if output_path is None:
+        output_path = build_default_output_path(
+            output_dir=args.output_dir,
+            rule_name=args.rule,
+            black_agent_name=args.black,
+            white_agent_name=args.white,
+            games=args.games,
+            board_size=args.board_size,
+            seed=args.seed,
+        )
+
+    tournament_results = run_tournament(
+        games=args.games,
+        board_size=args.board_size,
+        rule_name=args.rule,
+        black_agent_name=args.black,
+        white_agent_name=args.white,
+        seed=args.seed,
+        minimax_depth=args.minimax_depth,
+        minimax_candidate_radius=args.minimax_candidate_radius,
+        mcts_simulations=args.mcts_simulations,
+        mcts_exploration_weight=args.mcts_exploration_weight,
+        mcts_candidate_radius=args.mcts_candidate_radius,
+        mcts_rollout_depth=args.mcts_rollout_depth,
+        nn_mcts_simulations=args.nn_mcts_simulations,
+        nn_mcts_checkpoint=args.nn_mcts_checkpoint,
+        nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
+        nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
+        nn_mcts_device=args.nn_mcts_device,
+    )
+
+    save_results_to_csv(
+        results=tournament_results,
+        output_path=output_path,
+        rule_name=args.rule,
+        black_agent_config=black_agent_config,
+        white_agent_config=white_agent_config,
     )
