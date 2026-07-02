@@ -3,18 +3,24 @@ Neural-network-guided Monte Carlo Tree Search agent for Gomoku.
 
 This agent uses a policy-value neural network to guide MCTS.
 
-Compared with a simple one-move NN agent, NN-MCTS works as follows:
+Important for AlphaZero-style training:
+select_move_with_policy() returns both:
+1. selected_move:
+   the actual move to play.
+2. policy_distribution:
+   the MCTS visit-count distribution used as the policy target.
 
-1. The neural network gives prior probabilities for candidate moves.
-2. MCTS uses these priors during tree search.
-3. The neural network value head evaluates leaf positions.
-4. The final move is selected from MCTS visit counts.
+The move selection temperature and policy target temperature are separated:
 
-This file also provides select_move_with_policy(), which returns both:
-- the selected move
-- the MCTS visit-count policy distribution over the full board
+- move_temperature:
+  controls how the actual move is chosen.
+  For example, early self-play can sample from visits, while later moves can
+  choose the most visited move.
 
-This is needed for AlphaZero-style self-play training.
+- policy_temperature:
+  controls how the visit distribution is saved as a training target.
+  This allows the training data to keep a soft MCTS distribution even when the
+  actual played move is deterministic.
 """
 
 from __future__ import annotations
@@ -116,6 +122,8 @@ class NNMCTSAgent:
             Only consider legal moves near existing stones within this radius.
         device:
             "auto", "cpu", or "cuda".
+        seed:
+            Optional random seed for deterministic temperature sampling.
     """
 
     def __init__(
@@ -199,12 +207,13 @@ class NNMCTSAgent:
         """
         Select a move.
 
-        This keeps the old public interface used by run_tournament.py.
+        This keeps the old public interface used by tournament code.
         """
 
         move, _policy = self.select_move_with_policy(
             game=game,
-            temperature=0.0,
+            move_temperature=0.0,
+            policy_temperature=1.0,
             rng=self.rng,
         )
         return move
@@ -212,8 +221,10 @@ class NNMCTSAgent:
     def select_move_with_policy(
         self,
         game: Game,
-        temperature: float = 0.0,
+        move_temperature: float = 0.0,
+        policy_temperature: float = 1.0,
         rng: Optional[random.Random] = None,
+        temperature: Optional[float] = None,
     ) -> Tuple[Move, np.ndarray]:
         """
         Select a move and return the MCTS visit-count policy distribution.
@@ -221,28 +232,37 @@ class NNMCTSAgent:
         Args:
             game:
                 Current game state.
-            temperature:
-                If 0, choose the most visited move.
-                If > 0, sample from visit counts adjusted by temperature.
-                This is useful for AlphaZero-style opening exploration.
+            move_temperature:
+                Controls actual move selection.
+                0 means choose the most visited move.
+                >0 means sample from visit counts.
+            policy_temperature:
+                Controls the saved policy distribution.
+                1.0 keeps the normal visit-count distribution.
+                0.0 turns it into one-hot on the most visited move.
             rng:
-                Optional random generator used for temperature sampling.
+                Optional random generator for sampling.
+            temperature:
+                Backward-compatible alias. If provided, it sets both
+                move_temperature and policy_temperature to the same value.
 
         Returns:
             selected_move:
-                The move chosen by NN-MCTS.
+                Actual move selected by NN-MCTS.
             policy_distribution:
-                A numpy array of shape [board_size * board_size].
-                It sums to 1 over legal searched moves.
+                Full-board policy target of shape [board_size * board_size].
         """
+
+        if temperature is not None:
+            move_temperature = temperature
+            policy_temperature = temperature
 
         legal_moves = game.get_legal_moves()
 
         if not legal_moves:
             raise ValueError("No legal moves available.")
 
-        # Keep the established Gomoku opening convention:
-        # on an empty board, play the centre directly.
+        # Empty board convention: play centre directly.
         if not game.board.move_history:
             centre = game.board.size // 2
             centre_move = (centre, centre)
@@ -254,7 +274,7 @@ class NNMCTSAgent:
 
         root = NNMCTSNode(game=game.copy())
 
-        # Expand root before simulations so that child priors are available.
+        # Expand root before simulations so child priors exist.
         self._expand_and_evaluate(root)
 
         if not root.children:
@@ -276,16 +296,19 @@ class NNMCTSAgent:
             # Backpropagation
             self._backpropagate(node, value)
 
-        policy_distribution = self._build_visit_distribution(
-            root=root,
-            temperature=temperature,
+        root_moves, root_visits = self._get_root_visit_counts(root)
+
+        selected_move = self._select_move_from_visits(
+            moves=root_moves,
+            visits=root_visits,
+            temperature=move_temperature,
+            rng=rng,
         )
 
-        selected_move = self._select_move_from_distribution(
-            policy_distribution=policy_distribution,
-            legal_moves=list(root.children.keys()),
-            temperature=temperature,
-            rng=rng,
+        policy_distribution = self._build_visit_distribution(
+            moves=root_moves,
+            visits=root_visits,
+            temperature=policy_temperature,
         )
 
         return selected_move, policy_distribution
@@ -364,7 +387,6 @@ class NNMCTSAgent:
         actions = [move_to_action(move, self.board_size) for move in candidate_moves]
         candidate_logits = logits[actions]
 
-        # Numerical stability.
         candidate_logits = candidate_logits - np.max(candidate_logits)
         exp_logits = np.exp(candidate_logits)
 
@@ -374,8 +396,6 @@ class NNMCTSAgent:
             priors = exp_logits / exp_logits.sum()
 
         value = float(value_tensor.squeeze().detach().cpu().item())
-
-        # Clamp for safety.
         value = max(-1.0, min(1.0, value))
 
         return priors.astype(np.float32), value
@@ -405,8 +425,14 @@ class NNMCTSAgent:
         candidate_set = set()
 
         for (row, col), _player in game.board.move_history:
-            for candidate_row in range(row - self.candidate_radius, row + self.candidate_radius + 1):
-                for candidate_col in range(col - self.candidate_radius, col + self.candidate_radius + 1):
+            for candidate_row in range(
+                row - self.candidate_radius,
+                row + self.candidate_radius + 1,
+            ):
+                for candidate_col in range(
+                    col - self.candidate_radius,
+                    col + self.candidate_radius + 1,
+                ):
                     candidate_move = (candidate_row, candidate_col)
 
                     if candidate_move in legal_set:
@@ -456,24 +482,17 @@ class NNMCTSAgent:
             current_value = -current_value
             current_node = current_node.parent
 
-    def _build_visit_distribution(
+    def _get_root_visit_counts(
         self,
         root: NNMCTSNode,
-        temperature: float,
-    ) -> np.ndarray:
-        """
-        Build a full-board policy distribution from root child visit counts.
-
-        If temperature is 0, the most visited move receives probability 1.
-        If temperature > 0, visit counts are transformed by 1 / temperature.
-        """
-
-        policy = np.zeros(self.board_size * self.board_size, dtype=np.float32)
-
-        if not root.children:
-            return policy
+    ) -> Tuple[List[Move], np.ndarray]:
+        """Return root child moves and their visit counts."""
 
         moves = list(root.children.keys())
+
+        if not moves:
+            return [], np.array([], dtype=np.float64)
+
         visits = np.array(
             [root.children[move].visits for move in moves],
             dtype=np.float64,
@@ -482,61 +501,85 @@ class NNMCTSAgent:
         if visits.sum() <= 0:
             visits = np.ones_like(visits)
 
+        return moves, visits
+
+    def _build_visit_distribution(
+        self,
+        moves: List[Move],
+        visits: np.ndarray,
+        temperature: float,
+    ) -> np.ndarray:
+        """
+        Build a full-board policy distribution from visit counts.
+
+        If temperature is 0, this becomes one-hot on the most visited move.
+        If temperature > 0, this saves a soft visit-count distribution.
+        """
+
+        policy = np.zeros(self.board_size * self.board_size, dtype=np.float32)
+
+        if not moves:
+            return policy
+
+        if visits.sum() <= 0:
+            visits = np.ones(len(moves), dtype=np.float64)
+
         if temperature <= 0.0:
             best_index = int(np.argmax(visits))
             best_move = moves[best_index]
             policy[move_to_action(best_move, self.board_size)] = 1.0
             return policy
 
-        adjusted = np.power(visits, 1.0 / temperature)
+        adjusted_visits = np.power(visits, 1.0 / temperature)
 
-        if not np.isfinite(adjusted).all() or adjusted.sum() <= 0:
-            adjusted = np.ones_like(adjusted)
+        if not np.isfinite(adjusted_visits).all() or adjusted_visits.sum() <= 0:
+            adjusted_visits = np.ones(len(moves), dtype=np.float64)
 
-        probabilities = adjusted / adjusted.sum()
+        probabilities = adjusted_visits / adjusted_visits.sum()
 
         for move, probability in zip(moves, probabilities):
             policy[move_to_action(move, self.board_size)] = float(probability)
 
-        return policy
+        return policy.astype(np.float32)
 
-    def _select_move_from_distribution(
+    def _select_move_from_visits(
         self,
-        policy_distribution: np.ndarray,
-        legal_moves: List[Move],
+        moves: List[Move],
+        visits: np.ndarray,
         temperature: float,
         rng: Optional[random.Random],
     ) -> Move:
-        """Select a legal move from a full-board policy distribution."""
+        """
+        Select the actual move from visit counts.
 
-        if not legal_moves:
-            raise ValueError("No legal moves available.")
+        This is separate from the policy target distribution.
+        """
+
+        if not moves:
+            raise ValueError("No candidate moves available.")
+
+        if visits.sum() <= 0:
+            visits = np.ones(len(moves), dtype=np.float64)
 
         if temperature <= 0.0:
-            best_move = max(
-                legal_moves,
-                key=lambda move: policy_distribution[move_to_action(move, self.board_size)],
-            )
-            return best_move
+            best_index = int(np.argmax(visits))
+            return moves[best_index]
 
-        probabilities = np.array(
-            [policy_distribution[move_to_action(move, self.board_size)] for move in legal_moves],
-            dtype=np.float64,
-        )
+        adjusted_visits = np.power(visits, 1.0 / temperature)
 
-        if probabilities.sum() <= 0 or not np.isfinite(probabilities).all():
-            probabilities = np.ones(len(legal_moves), dtype=np.float64) / len(legal_moves)
+        if not np.isfinite(adjusted_visits).all() or adjusted_visits.sum() <= 0:
+            probabilities = np.ones(len(moves), dtype=np.float64) / len(moves)
         else:
-            probabilities = probabilities / probabilities.sum()
+            probabilities = adjusted_visits / adjusted_visits.sum()
 
         random_generator = rng or self.rng
         threshold = random_generator.random()
 
         cumulative = 0.0
-        for move, probability in zip(legal_moves, probabilities):
-            cumulative += probability
+        for move, probability in zip(moves, probabilities):
+            cumulative += float(probability)
 
             if threshold <= cumulative:
                 return move
 
-        return legal_moves[-1]
+        return moves[-1]

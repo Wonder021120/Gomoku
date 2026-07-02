@@ -3,14 +3,12 @@ Generate self-play data for training the Gomoku policy-value network.
 
 This script supports Random, Greedy, and NN-MCTS self-play data generation.
 
-For NN-MCTS self-play, this file also supports optional opening exploration.
-Opening exploration is only used during data generation, not during formal
-tournament experiments.
+For NN-MCTS, this version supports AlphaZero-style policy targets:
+instead of storing only the final selected move as a one-hot vector, it can store
+the MCTS visit-count policy distribution returned by NNMCTSAgent.
 
-The purpose of opening exploration is to avoid fully deterministic self-play
-games where every game follows the same move sequence. Exploration is local:
-it samples from legal moves near existing stones instead of sampling randomly
-from the whole board.
+This is still a lightweight implementation, but it is closer to AlphaZero-style
+training than the previous one-hot-only pipeline.
 """
 
 from __future__ import annotations
@@ -23,8 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-# Ensure the project root is importable when running:
-# python experiments/generate_self_play_data.py
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -83,22 +79,14 @@ def create_agent(
             exploration_weight=nn_mcts_exploration_weight,
             candidate_radius=nn_mcts_candidate_radius,
             device=nn_mcts_device,
+            seed=seed,
         )
 
     raise ValueError(f"Unsupported agent: {agent_name}")
 
 
-def build_policy_target(board_size: int, move: Move) -> np.ndarray:
-    """
-    Build a one-hot policy target.
-
-    This project uses a simplified NN-MCTS training target:
-    the final move selected during self-play is encoded as 1, and all other
-    board positions are encoded as 0.
-
-    This is different from full AlphaZero-style training, where the full MCTS
-    visit-count distribution is usually stored as the policy target.
-    """
+def build_one_hot_policy_target(board_size: int, move: Move) -> np.ndarray:
+    """Build a one-hot policy target for a selected move."""
 
     policy_target = np.zeros(board_size * board_size, dtype=np.float32)
     action = move_to_action(move, board_size)
@@ -106,15 +94,43 @@ def build_policy_target(board_size: int, move: Move) -> np.ndarray:
     return policy_target
 
 
+def normalize_policy_target(
+    policy_target: np.ndarray,
+    board_size: int,
+    fallback_move: Move,
+) -> np.ndarray:
+    """
+    Validate and normalize a policy target.
+
+    If the policy is invalid, fall back to one-hot encoding of the selected move.
+    """
+
+    expected_shape = (board_size * board_size,)
+    policy = np.asarray(policy_target, dtype=np.float32)
+
+    if policy.shape != expected_shape:
+        return build_one_hot_policy_target(board_size, fallback_move)
+
+    total = float(policy.sum())
+
+    if total <= 0.0 or not np.isfinite(total):
+        return build_one_hot_policy_target(board_size, fallback_move)
+
+    policy = policy / total
+
+    if not np.isfinite(policy).all():
+        return build_one_hot_policy_target(board_size, fallback_move)
+
+    return policy.astype(np.float32)
+
+
 def get_nearby_candidate_moves(game: Game, radius: int) -> List[Move]:
     """
     Return legal moves near existing stones.
 
-    This function is used for opening exploration. It prevents unrealistic
-    full-board random moves, such as placing the second move in a far corner.
-
-    If the board is empty, the centre move is returned when legal.
-    Otherwise, legal moves within the given radius of existing stones are used.
+    This is kept for legacy one-hot opening exploration. For the new
+    AlphaZero-style NN-MCTS mode, exploration should normally come from
+    temperature sampling over the MCTS visit distribution instead.
     """
 
     legal_moves = game.get_legal_moves()
@@ -131,6 +147,7 @@ def get_nearby_candidate_moves(game: Game, radius: int) -> List[Move]:
 
         return legal_moves
 
+    legal_set = set(legal_moves)
     candidate_set = set()
 
     for (row, col), _player in game.board.move_history:
@@ -138,7 +155,7 @@ def get_nearby_candidate_moves(game: Game, radius: int) -> List[Move]:
             for candidate_col in range(col - radius, col + radius + 1):
                 candidate_move = (candidate_row, candidate_col)
 
-                if candidate_move in legal_moves:
+                if candidate_move in legal_set:
                     candidate_set.add(candidate_move)
 
     if not candidate_set:
@@ -147,33 +164,73 @@ def get_nearby_candidate_moves(game: Game, radius: int) -> List[Move]:
     return sorted(candidate_set)
 
 
-def choose_self_play_move(
+def resolve_policy_target_mode(agent_name: str, requested_mode: str) -> str:
+    """
+    Resolve policy target mode.
+
+    auto:
+        nn_mcts -> visit_distribution
+        random/greedy -> one_hot
+    """
+
+    if requested_mode == "auto":
+        if agent_name == "nn_mcts":
+            return "visit_distribution"
+        return "one_hot"
+
+    if requested_mode == "visit_distribution" and agent_name != "nn_mcts":
+        raise ValueError(
+            "--policy-target-mode visit_distribution is only supported for nn_mcts."
+        )
+
+    return requested_mode
+
+
+def choose_move_and_policy_target(
     game: Game,
     agent,
+    agent_name: str,
     rng: random.Random,
+    policy_target_mode: str,
+    temperature_moves: int,
+    temperature: float,
+    policy_temperature: float,
+    board_size: int,
     opening_exploration_moves: int,
     opening_exploration_rate: float,
     opening_exploration_radius: int,
-) -> Tuple[Move, bool]:
+) -> Tuple[Move, np.ndarray, str]:
     """
-    Choose a move during self-play.
+    Choose a move and return the corresponding policy target.
 
-    Opening exploration logic:
+    For NN-MCTS with visit_distribution:
+        - Use select_move_with_policy().
+        - During early moves, temperature sampling can be enabled.
+        - Save the returned MCTS visit distribution as the policy target.
 
-    - move_count == 0:
-      Do not explore. This keeps the first move controlled by the agent.
-      For NN-MCTS, this is usually the centre move.
-
-    - 0 < move_count < opening_exploration_moves:
-      Exploration is allowed with probability opening_exploration_rate.
-      If exploration happens, a legal move is sampled from nearby candidate
-      moves around existing stones.
-
-    - move_count >= opening_exploration_moves:
-      Exploration stops. The move is fully selected by the agent.
+    For one_hot:
+        - Optionally use legacy local opening exploration.
+        - Save the final selected move as one-hot.
     """
 
     move_count = len(game.board.move_history)
+
+    if agent_name == "nn_mcts" and policy_target_mode == "visit_distribution":
+        move_temperature = temperature if move_count < temperature_moves else 0.0
+        move, policy_target = agent.select_move_with_policy(
+            game=game,
+            move_temperature=move_temperature,
+            policy_temperature=policy_temperature,
+            rng=rng,
+        )
+
+        policy_target = normalize_policy_target(
+            policy_target=policy_target,
+            board_size=board_size,
+            fallback_move=move,
+        )
+
+        return move, policy_target, "visit_distribution"
 
     should_use_opening_exploration = (
         move_count > 0
@@ -189,9 +246,11 @@ def choose_self_play_move(
         )
 
         if candidate_moves:
-            return rng.choice(candidate_moves), True
+            move = rng.choice(candidate_moves)
+            return move, build_one_hot_policy_target(board_size, move), "one_hot_explore"
 
-    return agent.select_move(game), False
+    move = agent.select_move(game)
+    return move, build_one_hot_policy_target(board_size, move), "one_hot"
 
 
 def get_winner_from_status(status: GameStatus) -> int:
@@ -217,22 +276,24 @@ def play_self_play_game(
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    policy_target_mode: str,
+    temperature_moves: int,
+    temperature: float,
+    policy_temperature: float,
     opening_exploration_moves: int,
     opening_exploration_rate: float,
     opening_exploration_radius: int,
-) -> Tuple[List[SelfPlaySample], int, GameStatus, int]:
+) -> Tuple[List[SelfPlaySample], int, GameStatus, int, List[int], int]:
     """
     Play one self-play game and return collected samples.
 
     Returns:
-        samples:
-            Training samples from this game.
-        winner:
-            Board.BLACK, Board.WHITE, or Board.EMPTY.
-        status:
-            Final GameStatus.
-        exploration_count:
-            Number of opening exploration moves used in this game.
+        samples
+        winner
+        final status
+        legacy opening exploration count
+        policy nonzero counts
+        visit-distribution target count
     """
 
     rng = random.Random(seed)
@@ -262,7 +323,9 @@ def play_self_play_game(
     )
 
     samples: List[SelfPlaySample] = []
-    exploration_count = 0
+    legacy_exploration_count = 0
+    policy_nonzero_counts: List[int] = []
+    visit_distribution_count = 0
 
     while game.status == GameStatus.ONGOING and len(game.board.move_history) < max_moves:
         current_player = game.current_player
@@ -270,19 +333,28 @@ def play_self_play_game(
 
         state = encode_board_state(game.board, current_player)
 
-        move, used_opening_exploration = choose_self_play_move(
+        move, policy_target, target_kind = choose_move_and_policy_target(
             game=game,
             agent=agent,
+            agent_name=agent_name,
             rng=rng,
+            policy_target_mode=policy_target_mode,
+            temperature_moves=temperature_moves,
+            temperature=temperature,
+            policy_temperature=policy_temperature,
+            board_size=board_size,
             opening_exploration_moves=opening_exploration_moves,
             opening_exploration_rate=opening_exploration_rate,
             opening_exploration_radius=opening_exploration_radius,
         )
 
-        if used_opening_exploration:
-            exploration_count += 1
+        if target_kind == "one_hot_explore":
+            legacy_exploration_count += 1
 
-        policy_target = build_policy_target(board_size=board_size, move=move)
+        if target_kind == "visit_distribution":
+            visit_distribution_count += 1
+
+        policy_nonzero_counts.append(int(np.count_nonzero(policy_target > 1e-8)))
 
         samples.append(
             SelfPlaySample(
@@ -296,7 +368,6 @@ def play_self_play_game(
 
     winner = get_winner_from_status(game.status)
 
-    # If max_moves is reached before a terminal result, treat it as draw.
     if game.status == GameStatus.ONGOING:
         winner = Board.EMPTY
 
@@ -308,7 +379,14 @@ def play_self_play_game(
         else:
             sample.value_target = -1.0
 
-    return samples, winner, game.status, exploration_count
+    return (
+        samples,
+        winner,
+        game.status,
+        legacy_exploration_count,
+        policy_nonzero_counts,
+        visit_distribution_count,
+    )
 
 
 def save_dataset(
@@ -345,11 +423,19 @@ def save_dataset(
         metadata=json.dumps(metadata),
     )
 
+    row_sums = policy_targets.sum(axis=1)
+    nonzero_counts = (policy_targets > 1e-8).sum(axis=1)
+    non_one_hot_count = int((nonzero_counts > 1).sum())
+
     print(f"Saved self-play dataset to: {output_path}")
     print(f"states shape: {states.shape}")
     print(f"policy_targets shape: {policy_targets.shape}")
     print(f"value_targets shape: {value_targets.shape}")
     print(f"current_players shape: {current_players.shape}")
+    print(f"policy row sum min: {row_sums.min():.6f}")
+    print(f"policy row sum max: {row_sums.max():.6f}")
+    print(f"avg policy nonzero count: {float(nonzero_counts.mean()):.2f}")
+    print(f"non-one-hot policy targets: {non_one_hot_count}/{len(nonzero_counts)}")
 
 
 def build_default_output_path(
@@ -359,22 +445,18 @@ def build_default_output_path(
     board_size: int,
     games: int,
     seed: int,
-    opening_exploration_moves: int,
-    opening_exploration_rate: float,
+    policy_target_mode: str,
+    temperature_moves: int,
+    temperature: float,
 ) -> Path:
     """Build a readable default output filename."""
 
-    exploration_suffix = ""
-
-    if opening_exploration_moves > 0 and opening_exploration_rate > 0.0:
-        rate_text = str(opening_exploration_rate).replace(".", "p")
-        exploration_suffix = (
-            f"_openexp{opening_exploration_moves}_rate{rate_text}"
-        )
+    temperature_text = str(temperature).replace(".", "p")
 
     filename = (
         f"self_play_{agent}_{rule}_{board_size}x{board_size}"
-        f"_{games}games_seed{seed}{exploration_suffix}.npz"
+        f"_{games}games_seed{seed}_{policy_target_mode}"
+        f"_temp{temperature_text}_moves{temperature_moves}.npz"
     )
 
     return output_dir / filename
@@ -420,6 +502,43 @@ def parse_args() -> argparse.Namespace:
         help="Optional explicit output npz path.",
     )
 
+    parser.add_argument(
+        "--policy-target-mode",
+        choices=["auto", "one_hot", "visit_distribution"],
+        default="auto",
+        help=(
+            "Policy target type. auto uses visit_distribution for nn_mcts "
+            "and one_hot for random/greedy."
+        ),
+    )
+
+    parser.add_argument(
+        "--temperature-moves",
+        type=int,
+        default=8,
+        help=(
+            "Number of early moves using temperature sampling for NN-MCTS "
+            "visit-distribution self-play."
+        ),
+    )
+
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Temperature used during early NN-MCTS self-play moves.",
+    )
+
+    parser.add_argument(
+    "--policy-temperature",
+    type=float,
+    default=1.0,
+    help=(
+        "Temperature used when saving NN-MCTS visit distributions as "
+        "policy targets. Keep this at 1.0 for soft AlphaZero-style targets."
+    ),
+)
+
     # NN-MCTS options
     parser.add_argument("--nn-mcts-simulations", type=int, default=25)
     parser.add_argument("--nn-mcts-checkpoint", type=str, default=None)
@@ -427,15 +546,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nn-mcts-candidate-radius", type=int, default=2)
     parser.add_argument("--nn-mcts-device", type=str, default="auto")
 
-    # Opening exploration options
+    # Legacy local opening exploration options for one-hot mode
     parser.add_argument(
         "--opening-exploration-moves",
         type=int,
         default=0,
         help=(
-            "Number of opening moves where local random exploration is allowed. "
-            "For example, 8 means moves 2 to 8 may explore because move 1 is kept "
-            "controlled by the agent. Use 0 to disable exploration."
+            "Legacy one-hot local opening exploration. Ignored for NN-MCTS "
+            "visit_distribution mode."
         ),
     )
 
@@ -443,20 +561,14 @@ def parse_args() -> argparse.Namespace:
         "--opening-exploration-rate",
         type=float,
         default=0.0,
-        help=(
-            "Probability of using local random exploration during the opening stage. "
-            "For example, 0.3 means 30 percent."
-        ),
+        help="Legacy one-hot local opening exploration probability.",
     )
 
     parser.add_argument(
         "--opening-exploration-radius",
         type=int,
         default=3,
-        help=(
-            "Radius around existing stones for local random opening exploration. "
-            "This prevents full-board random moves."
-        ),
+        help="Legacy one-hot local opening exploration radius.",
     )
 
     return parser.parse_args()
@@ -480,6 +592,12 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.nn_mcts_candidate_radius <= 0:
         raise ValueError("--nn-mcts-candidate-radius must be positive.")
 
+    if args.temperature_moves < 0:
+        raise ValueError("--temperature-moves must be non-negative.")
+
+    if args.policy_temperature < 0.0:
+        raise ValueError("--policy-temperature must be non-negative.")
+
     if args.opening_exploration_moves < 0:
         raise ValueError("--opening-exploration-moves must be non-negative.")
 
@@ -496,6 +614,11 @@ def main() -> None:
     args = parse_args()
     validate_args(args)
 
+    resolved_policy_target_mode = resolve_policy_target_mode(
+        agent_name=args.agent,
+        requested_mode=args.policy_target_mode,
+    )
+
     if args.agent == "nn_mcts" and args.nn_mcts_checkpoint is None:
         print(
             "Warning: NN-MCTS is running without a checkpoint. "
@@ -509,14 +632,17 @@ def main() -> None:
         board_size=args.board_size,
         games=args.games,
         seed=args.seed,
-        opening_exploration_moves=args.opening_exploration_moves,
-        opening_exploration_rate=args.opening_exploration_rate,
+        policy_target_mode=resolved_policy_target_mode,
+        temperature_moves=args.temperature_moves,
+        temperature=args.temperature,
     )
 
     all_samples: List[SelfPlaySample] = []
     game_lengths: List[int] = []
     winners: List[int] = []
-    exploration_counts: List[int] = []
+    legacy_exploration_counts: List[int] = []
+    all_policy_nonzero_counts: List[int] = []
+    visit_distribution_counts: List[int] = []
 
     print("Self-play configuration:")
     print(f"  games: {args.games}")
@@ -525,20 +651,32 @@ def main() -> None:
     print(f"  agent: {args.agent}")
     print(f"  max_moves: {args.max_moves}")
     print(f"  seed: {args.seed}")
+    print(f"  requested_policy_target_mode: {args.policy_target_mode}")
+    print(f"  resolved_policy_target_mode: {resolved_policy_target_mode}")
+    print(f"  temperature_moves: {args.temperature_moves}")
+    print(f"  temperature: {args.temperature}")
+    print(f"  policy_temperature: {args.policy_temperature}")
     print(f"  nn_mcts_simulations: {args.nn_mcts_simulations}")
     print(f"  nn_mcts_checkpoint: {args.nn_mcts_checkpoint}")
     print(f"  nn_mcts_exploration_weight: {args.nn_mcts_exploration_weight}")
     print(f"  nn_mcts_candidate_radius: {args.nn_mcts_candidate_radius}")
     print(f"  nn_mcts_device: {args.nn_mcts_device}")
-    print(f"  opening_exploration_moves: {args.opening_exploration_moves}")
-    print(f"  opening_exploration_rate: {args.opening_exploration_rate}")
-    print(f"  opening_exploration_radius: {args.opening_exploration_radius}")
+    print(f"  legacy_opening_exploration_moves: {args.opening_exploration_moves}")
+    print(f"  legacy_opening_exploration_rate: {args.opening_exploration_rate}")
+    print(f"  legacy_opening_exploration_radius: {args.opening_exploration_radius}")
     print()
 
     for game_index in tqdm(range(args.games), desc="Generating self-play games"):
         game_seed = args.seed + game_index
 
-        samples, winner, status, exploration_count = play_self_play_game(
+        (
+            samples,
+            winner,
+            status,
+            legacy_exploration_count,
+            policy_nonzero_counts,
+            visit_distribution_count,
+        ) = play_self_play_game(
             board_size=args.board_size,
             rule=args.rule,
             agent_name=args.agent,
@@ -549,6 +687,10 @@ def main() -> None:
             nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
             nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
             nn_mcts_device=args.nn_mcts_device,
+            policy_target_mode=resolved_policy_target_mode,
+            temperature_moves=args.temperature_moves,
+            temperature=args.temperature,
+            policy_temperature=args.policy_temperature,
             opening_exploration_moves=args.opening_exploration_moves,
             opening_exploration_rate=args.opening_exploration_rate,
             opening_exploration_radius=args.opening_exploration_radius,
@@ -557,14 +699,19 @@ def main() -> None:
         all_samples.extend(samples)
         game_lengths.append(len(samples))
         winners.append(winner)
-        exploration_counts.append(exploration_count)
+        legacy_exploration_counts.append(legacy_exploration_count)
+        all_policy_nonzero_counts.extend(policy_nonzero_counts)
+        visit_distribution_counts.append(visit_distribution_count)
+
+        avg_nonzero = float(np.mean(policy_nonzero_counts)) if policy_nonzero_counts else 0.0
 
         print(
             f"Game {game_index + 1}/{args.games}: "
             f"{len(samples)} samples, "
             f"winner={winner}, "
             f"status={status.name}, "
-            f"opening_explorations={exploration_count}"
+            f"visit_distribution_targets={visit_distribution_count}, "
+            f"avg_policy_nonzero={avg_nonzero:.2f}"
         )
 
     metadata = {
@@ -574,17 +721,24 @@ def main() -> None:
         "agent": args.agent,
         "seed": args.seed,
         "max_moves": args.max_moves,
+        "requested_policy_target_mode": args.policy_target_mode,
+        "resolved_policy_target_mode": resolved_policy_target_mode,
+        "temperature_moves": args.temperature_moves,
+        "temperature": args.temperature,
+        "policy_temperature": args.policy_temperature,
         "nn_mcts_simulations": args.nn_mcts_simulations,
         "nn_mcts_checkpoint": args.nn_mcts_checkpoint,
         "nn_mcts_exploration_weight": args.nn_mcts_exploration_weight,
         "nn_mcts_candidate_radius": args.nn_mcts_candidate_radius,
         "nn_mcts_device": args.nn_mcts_device,
-        "opening_exploration_moves": args.opening_exploration_moves,
-        "opening_exploration_rate": args.opening_exploration_rate,
-        "opening_exploration_radius": args.opening_exploration_radius,
+        "legacy_opening_exploration_moves": args.opening_exploration_moves,
+        "legacy_opening_exploration_rate": args.opening_exploration_rate,
+        "legacy_opening_exploration_radius": args.opening_exploration_radius,
         "game_lengths": game_lengths,
         "winners": winners,
-        "exploration_counts": exploration_counts,
+        "legacy_exploration_counts": legacy_exploration_counts,
+        "policy_nonzero_counts": all_policy_nonzero_counts,
+        "visit_distribution_counts": visit_distribution_counts,
     }
 
     save_dataset(
@@ -593,13 +747,20 @@ def main() -> None:
         metadata=metadata,
     )
 
+    unique_lengths = sorted(set(game_lengths))
+    avg_policy_nonzero = (
+        float(np.mean(all_policy_nonzero_counts))
+        if all_policy_nonzero_counts
+        else 0.0
+    )
+
     print()
     print("Generation summary:")
     print(f"  total samples: {len(all_samples)}")
     print(f"  game lengths: {game_lengths}")
-    print(f"  unique game lengths: {sorted(set(game_lengths))}")
-    print(f"  exploration counts: {exploration_counts}")
-    print(f"  total opening explorations: {sum(exploration_counts)}")
+    print(f"  unique game lengths: {unique_lengths}")
+    print(f"  total visit-distribution targets: {sum(visit_distribution_counts)}")
+    print(f"  avg policy nonzero count: {avg_policy_nonzero:.2f}")
     print(f"  output: {output_path}")
 
 
