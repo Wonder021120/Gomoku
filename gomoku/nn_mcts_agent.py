@@ -145,10 +145,12 @@ class NNMCTSAgent:
         if candidate_radius <= 0:
             raise ValueError("candidate_radius must be positive.")
 
+        self.name = "nn_mcts"
         self.board_size = board_size
         self.simulations = simulations
         self.exploration_weight = exploration_weight
         self.candidate_radius = candidate_radius
+        self.checkpoint_path = checkpoint_path
         self.seed = seed
         self.rng = random.Random(seed)
         self.device = self._resolve_device(device)
@@ -202,6 +204,26 @@ class NNMCTSAgent:
 
         self.model.to(self.device)
         self.model.eval()
+
+    def get_config(self) -> dict:
+        """Return agent configuration for experiment logging."""
+
+        return {
+            "name": self.name,
+            "board_size": self.board_size,
+            "simulations": self.simulations,
+            "exploration_weight": self.exploration_weight,
+            "candidate_radius": self.candidate_radius,
+            "checkpoint_path": self.checkpoint_path,
+            "device": str(self.device),
+            "seed": self.seed,
+        }
+
+    @property
+    def config(self) -> dict:
+        """Agent configuration property for compatibility with experiment code."""
+
+        return self.get_config()
 
     def select_move(self, game: Game) -> Move:
         """
