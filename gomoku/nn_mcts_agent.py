@@ -21,6 +21,16 @@ The move selection temperature and policy target temperature are separated:
   controls how the visit distribution is saved as a training target.
   This allows the training data to keep a soft MCTS distribution even when the
   actual played move is deterministic.
+
+This version keeps the old project-compatible default NN-MCTS behaviour, while
+also adding an explicit paper-style 9x9 mode:
+
+    NNMCTSAgent(board_size=9, model_variant="paper_9x9")
+
+The paper-style mode uses:
+    - GomokuPolicyValueNet.create_paper_9x9()
+    - 4-channel encoding with the last-move plane
+    - board_size=9
 """
 
 from __future__ import annotations
@@ -112,18 +122,37 @@ class NNMCTSAgent:
     Args:
         board_size:
             Gomoku board size.
+
         simulations:
             Number of MCTS simulations per move.
+
         checkpoint_path:
             Optional path to a trained policy-value network checkpoint.
+
         exploration_weight:
             PUCT exploration constant.
+
         candidate_radius:
             Only consider legal moves near existing stones within this radius.
+
         device:
             "auto", "cpu", or "cuda".
+
         seed:
             Optional random seed for deterministic temperature sampling.
+
+        model_variant:
+            "legacy":
+                Old project-compatible network and 3-channel encoding.
+                This remains the default so existing tests/checkpoints do not break.
+
+            "paper_9x9":
+                Reference-paper-style 9x9 network and 4-channel encoding.
+                This is the mode we will use for the new NN-MCTS reproduction.
+
+        include_last_move:
+            Optional override for board encoding. If None, it is inferred from
+            the selected model variant / model input channels.
     """
 
     def __init__(
@@ -135,6 +164,8 @@ class NNMCTSAgent:
         candidate_radius: int = 2,
         device: str = "auto",
         seed: Optional[int] = None,
+        model_variant: str = "legacy",
+        include_last_move: Optional[bool] = None,
     ) -> None:
         if board_size <= 0:
             raise ValueError("board_size must be positive.")
@@ -154,13 +185,62 @@ class NNMCTSAgent:
         self.seed = seed
         self.rng = random.Random(seed)
         self.device = self._resolve_device(device)
+        self.model_variant = self._normalise_model_variant(model_variant)
 
-        self.model = GomokuPolicyValueNet(board_size=board_size)
+        self.model = self._create_model(
+            board_size=board_size,
+            model_variant=self.model_variant,
+        )
+
+        if include_last_move is None:
+            self.include_last_move = self._infer_include_last_move_from_model()
+        else:
+            self.include_last_move = bool(include_last_move)
+
         self.model.to(self.device)
         self.model.eval()
 
         if checkpoint_path is not None:
             self.load_checkpoint(checkpoint_path)
+
+    def _normalise_model_variant(self, model_variant: str) -> str:
+        value = str(model_variant).strip().lower().replace("-", "_").replace(" ", "_")
+
+        aliases = {
+            "legacy": "legacy",
+            "old": "legacy",
+            "default": "legacy",
+            "paper": "paper_9x9",
+            "paper_9x9": "paper_9x9",
+            "repro": "paper_9x9",
+            "reproduction": "paper_9x9",
+            "svn": "paper_9x9",
+        }
+
+        if value not in aliases:
+            valid = ", ".join(sorted(aliases))
+            raise ValueError(f"Unknown model_variant {model_variant!r}. Valid values include: {valid}")
+
+        return aliases[value]
+
+    def _create_model(self, board_size: int, model_variant: str) -> GomokuPolicyValueNet:
+        """Create the policy-value network for the selected mode."""
+
+        if model_variant == "paper_9x9":
+            if board_size != 9:
+                raise ValueError("model_variant='paper_9x9' requires board_size=9.")
+            return GomokuPolicyValueNet.create_paper_9x9()
+
+        if model_variant == "legacy":
+            return GomokuPolicyValueNet(board_size=board_size)
+
+        raise ValueError(f"Unhandled model_variant: {model_variant}")
+
+    def _infer_include_last_move_from_model(self) -> bool:
+        """Use 4-channel encoding when the model expects 4 channels."""
+
+        input_channels = getattr(self.model, "input_channels", 3)
+        return int(input_channels) == 4
 
     def _resolve_device(self, device: str) -> torch.device:
         """Resolve device string."""
@@ -187,7 +267,12 @@ class NNMCTSAgent:
             weights_only=False,
         )
 
-        checkpoint_board_size = checkpoint.get("board_size")
+        checkpoint_board_size = None
+        checkpoint_model_config = None
+
+        if isinstance(checkpoint, dict):
+            checkpoint_board_size = checkpoint.get("board_size")
+            checkpoint_model_config = checkpoint.get("model_config")
 
         if checkpoint_board_size is not None and checkpoint_board_size != self.board_size:
             raise ValueError(
@@ -195,15 +280,70 @@ class NNMCTSAgent:
                 f"agent board size {self.board_size}."
             )
 
-        if "model_state_dict" in checkpoint:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
-        elif "state_dict" in checkpoint:
-            self.model.load_state_dict(checkpoint["state_dict"])
-        else:
-            self.model.load_state_dict(checkpoint)
+        if checkpoint_model_config is not None:
+            self._maybe_rebuild_model_from_checkpoint_config(checkpoint_model_config)
 
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        try:
+            self.model.load_state_dict(state_dict)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Failed to load NN-MCTS checkpoint into the current model architecture. "
+                "For the new 9x9 reproduction checkpoint, initialise the agent with "
+                "model_variant='paper_9x9'. Old 15x15 checkpoints cannot be used with "
+                "the 9x9 paper-style network."
+            ) from exc
+
+        self.include_last_move = self._infer_include_last_move_from_model()
         self.model.to(self.device)
         self.model.eval()
+
+    def _maybe_rebuild_model_from_checkpoint_config(self, model_config: dict) -> None:
+        """
+        Rebuild model when the checkpoint stores architecture metadata.
+
+        This will be useful after we modify train_nn.py to save model_config.
+        Older checkpoints do not contain this metadata, so they keep the already
+        constructed model.
+        """
+
+        if not isinstance(model_config, dict):
+            return
+
+        variant = model_config.get("model_variant")
+        if variant is not None:
+            variant = self._normalise_model_variant(str(variant))
+            if variant != self.model_variant:
+                self.model_variant = variant
+                self.model = self._create_model(
+                    board_size=self.board_size,
+                    model_variant=self.model_variant,
+                )
+                return
+
+        input_channels = model_config.get("input_channels")
+        conv_channels = model_config.get("conv_channels")
+        policy_head_channels = model_config.get("policy_head_channels")
+        value_head_channels = model_config.get("value_head_channels")
+        value_hidden_size = model_config.get("value_hidden_size", 64)
+
+        if input_channels is None or conv_channels is None:
+            return
+
+        self.model = GomokuPolicyValueNet(
+            board_size=self.board_size,
+            input_channels=int(input_channels),
+            conv_channels=tuple(int(ch) for ch in conv_channels),
+            policy_head_channels=int(policy_head_channels or 2),
+            value_head_channels=int(value_head_channels or 1),
+            value_hidden_size=int(value_hidden_size),
+        )
 
     def get_config(self) -> dict:
         """Return agent configuration for experiment logging."""
@@ -217,6 +357,9 @@ class NNMCTSAgent:
             "checkpoint_path": self.checkpoint_path,
             "device": str(self.device),
             "seed": self.seed,
+            "model_variant": self.model_variant,
+            "include_last_move": self.include_last_move,
+            "input_channels": getattr(self.model, "input_channels", None),
         }
 
     @property
@@ -254,16 +397,20 @@ class NNMCTSAgent:
         Args:
             game:
                 Current game state.
+
             move_temperature:
                 Controls actual move selection.
                 0 means choose the most visited move.
                 >0 means sample from visit counts.
+
             policy_temperature:
                 Controls the saved policy distribution.
                 1.0 keeps the normal visit-count distribution.
                 0.0 turns it into one-hot on the most visited move.
+
             rng:
                 Optional random generator for sampling.
+
             temperature:
                 Backward-compatible alias. If provided, it sets both
                 move_temperature and policy_temperature to the same value.
@@ -271,6 +418,7 @@ class NNMCTSAgent:
         Returns:
             selected_move:
                 Actual move selected by NN-MCTS.
+
             policy_distribution:
                 Full-board policy target of shape [board_size * board_size].
         """
@@ -390,7 +538,11 @@ class NNMCTSAgent:
         Priors are normalized only over candidate moves.
         """
 
-        state = encode_board_state(game.board, game.current_player)
+        state = encode_board_state(
+            game.board,
+            game.current_player,
+            include_last_move=self.include_last_move,
+        )
         state_tensor = torch.from_numpy(state).unsqueeze(0).float().to(self.device)
 
         with torch.no_grad():
@@ -426,7 +578,7 @@ class NNMCTSAgent:
         """
         Return candidate legal moves near existing stones.
 
-        This keeps NN-MCTS computationally manageable on a 15x15 board.
+        This keeps NN-MCTS computationally manageable.
         """
 
         legal_moves = game.get_legal_moves()
