@@ -30,6 +30,8 @@ import json
 import shutil
 import subprocess
 import sys
+
+import torch
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -302,6 +304,45 @@ def build_generate_self_play_command(
     return command
 
 
+def get_checkpoint_epoch(checkpoint_path: Optional[Path]) -> int:
+    """Read the epoch number stored in a checkpoint."""
+
+    if checkpoint_path is None:
+        return 0
+
+    if not checkpoint_path.exists():
+        return 0
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+
+    if isinstance(checkpoint, dict):
+        return int(checkpoint.get("epoch", 0))
+
+    return 0
+
+
+def get_target_epochs_for_round(
+    args: argparse.Namespace,
+    best_checkpoint: Optional[Path],
+) -> int:
+    """
+    Convert per-round epochs into train_nn.py's absolute --epochs value.
+
+    train_nn.py resumes from checkpoint epoch + 1.
+    So if the best checkpoint is at epoch 5 and we want 5 more epochs,
+    this loop must call train_nn.py with --epochs 10, not --epochs 5.
+    """
+
+    if best_checkpoint is not None and args.resume_from_best:
+        return get_checkpoint_epoch(best_checkpoint) + args.epochs
+
+    return args.epochs
+
+
 def build_train_command(
     args: argparse.Namespace,
     data_path: Path,
@@ -309,6 +350,11 @@ def build_train_command(
     current_best_checkpoint: Path,
     best_checkpoint: Optional[Path],
 ) -> List[str]:
+    target_epochs = get_target_epochs_for_round(
+        args=args,
+        best_checkpoint=best_checkpoint,
+    )
+
     command = [
         sys.executable,
         "experiments/train_nn.py",
@@ -318,7 +364,7 @@ def build_train_command(
         "paper_9x9",
         "--augment-symmetries",
         "--epochs",
-        str(args.epochs),
+        str(target_epochs),
         "--batch-size",
         str(args.batch_size),
         "--learning-rate",
@@ -556,7 +602,8 @@ def main() -> None:
                 "temperature_moves": args.temperature_moves,
                 "temperature": args.temperature,
                 "policy_temperature": args.policy_temperature,
-                "epochs": args.epochs,
+                "epochs_per_round": args.epochs,
+                "target_epochs_this_round": get_target_epochs_for_round(args, best_before),
                 "batch_size": args.batch_size,
                 "learning_rate": args.learning_rate,
                 "eval_games": args.eval_games,
