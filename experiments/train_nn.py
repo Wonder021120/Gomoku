@@ -6,15 +6,17 @@ This version supports both:
 1. Old one-hot policy targets:
    policy_target[action] = 1
 
-2. New AlphaZero-style soft policy targets:
+2. AlphaZero-style soft policy targets:
    policy_target = MCTS visit-count distribution
 
-The key change is that policy loss now uses soft cross-entropy:
+It also supports the 9x9 paper-style NN-MCTS reproduction path:
 
-    loss = -sum(target_policy * log_softmax(policy_logits))
-
-So soft MCTS visit distributions are preserved during training instead of being
-converted back to one-hot labels with argmax.
+- model_variant="paper_9x9"
+- 4-channel states
+- 32 -> 64 -> 128 policy-value network
+- optional rotation/reflection symmetry augmentation
+- policy entropy metric
+- checkpoint model_config metadata for reliable loading by NNMCTSAgent
 """
 
 from __future__ import annotations
@@ -157,7 +159,101 @@ def normalize_policy_targets(policy_targets: np.ndarray) -> np.ndarray:
     return policy_targets.astype(np.float32)
 
 
-def load_dataset(data_path: Path) -> Tuple[GomokuSelfPlayDataset, Dict, int]:
+def transform_state_and_policy(
+    state: np.ndarray,
+    policy: np.ndarray,
+    board_size: int,
+    rotation_k: int,
+    flip_horizontal: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply the same board symmetry to a state tensor and a policy vector.
+
+    Transform order:
+        1. Rotate by rotation_k * 90 degrees.
+        2. Optionally flip horizontally.
+
+    This produces the 8 standard Gomoku symmetries:
+        rot0, rot90, rot180, rot270,
+        flip + rot0, flip + rot90, flip + rot180, flip + rot270.
+    """
+
+    if state.shape[-2:] != (board_size, board_size):
+        raise ValueError("state board shape does not match board_size.")
+
+    if policy.shape[0] != board_size * board_size:
+        raise ValueError("policy length does not match board_size.")
+
+    transformed_state = np.rot90(state, k=rotation_k, axes=(1, 2))
+    policy_board = policy.reshape(board_size, board_size)
+    transformed_policy_board = np.rot90(policy_board, k=rotation_k, axes=(0, 1))
+
+    if flip_horizontal:
+        transformed_state = np.flip(transformed_state, axis=2)
+        transformed_policy_board = np.fliplr(transformed_policy_board)
+
+    transformed_state = np.ascontiguousarray(transformed_state, dtype=np.float32)
+    transformed_policy = np.ascontiguousarray(
+        transformed_policy_board.reshape(-1),
+        dtype=np.float32,
+    )
+
+    return transformed_state, transformed_policy
+
+
+def augment_with_symmetries(
+    states: np.ndarray,
+    policy_targets: np.ndarray,
+    value_targets: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Expand a dataset by all 8 board symmetries.
+
+    Value targets do not change under rotation/reflection.
+    """
+
+    if states.ndim != 4:
+        raise ValueError("states must have shape [N, C, H, W].")
+
+    board_size = int(states.shape[-1])
+
+    if states.shape[-2] != board_size:
+        raise ValueError("states must have square board dimensions.")
+
+    augmented_states = []
+    augmented_policies = []
+    augmented_values = []
+
+    for state, policy, value in zip(states, policy_targets, value_targets):
+        for flip_horizontal in (False, True):
+            for rotation_k in range(4):
+                transformed_state, transformed_policy = transform_state_and_policy(
+                    state=state,
+                    policy=policy,
+                    board_size=board_size,
+                    rotation_k=rotation_k,
+                    flip_horizontal=flip_horizontal,
+                )
+                augmented_states.append(transformed_state)
+                augmented_policies.append(transformed_policy)
+                augmented_values.append(value)
+
+    states_out = np.stack(augmented_states, axis=0).astype(np.float32)
+    policies_out = normalize_policy_targets(
+        np.stack(augmented_policies, axis=0).astype(np.float32)
+    )
+    values_out = np.asarray(augmented_values, dtype=np.float32)
+
+    if values_out.ndim == 1:
+        values_out = values_out.reshape(-1, 1)
+
+    return states_out, policies_out, values_out
+
+
+def load_dataset(
+    data_path: Path,
+    augment_symmetries: bool = False,
+) -> Tuple[GomokuSelfPlayDataset, Dict, int, int]:
     """Load self-play data from npz."""
 
     if not data_path.exists():
@@ -176,12 +272,22 @@ def load_dataset(data_path: Path) -> Tuple[GomokuSelfPlayDataset, Dict, int]:
     value_targets = npz_file["value_targets"].astype(np.float32)
 
     board_size = int(states.shape[-1])
+    input_channels = int(states.shape[1])
     expected_action_count = board_size * board_size
 
     if policy_targets.shape[1] != expected_action_count:
         raise ValueError(
             f"policy_targets second dimension should be {expected_action_count}, "
             f"got {policy_targets.shape[1]}"
+        )
+
+    original_sample_count = int(states.shape[0])
+
+    if augment_symmetries:
+        states, policy_targets, value_targets = augment_with_symmetries(
+            states=states,
+            policy_targets=policy_targets,
+            value_targets=value_targets,
         )
 
     metadata = load_npz_metadata(npz_file)
@@ -198,11 +304,14 @@ def load_dataset(data_path: Path) -> Tuple[GomokuSelfPlayDataset, Dict, int]:
 
     print("Dataset loaded:")
     print(f"  path: {data_path}")
-    print(f"  samples: {len(dataset)}")
+    print(f"  original samples: {original_sample_count}")
+    print(f"  samples after augmentation: {len(dataset)}")
     print(f"  states shape: {states.shape}")
+    print(f"  input_channels: {input_channels}")
     print(f"  policy_targets shape: {policy_targets.shape}")
     print(f"  value_targets shape: {value_targets.shape}")
     print(f"  board_size: {board_size}")
+    print(f"  augment_symmetries: {augment_symmetries}")
     print(f"  policy row sum min: {row_sums.min():.6f}")
     print(f"  policy row sum max: {row_sums.max():.6f}")
     print(f"  avg policy nonzero count: {float(nonzero_counts.mean()):.2f}")
@@ -224,7 +333,7 @@ def load_dataset(data_path: Path) -> Tuple[GomokuSelfPlayDataset, Dict, int]:
 
     print()
 
-    return dataset, metadata, board_size
+    return dataset, metadata, board_size, input_channels
 
 
 def split_dataset(
@@ -290,6 +399,29 @@ def soft_policy_cross_entropy(
     return -(policy_targets * log_probs).sum(dim=1).mean()
 
 
+def policy_entropy(policy_logits: torch.Tensor) -> torch.Tensor:
+    """
+    Mean entropy of the model policy distribution.
+
+    Higher entropy means the policy is more diffuse.
+    Lower entropy means the model is more confident/concentrated.
+    """
+
+    probabilities = torch.softmax(policy_logits, dim=1)
+    log_probs = torch.log_softmax(policy_logits, dim=1)
+    entropy = -(probabilities * log_probs).sum(dim=1)
+    return entropy.mean()
+
+
+def target_policy_entropy(policy_targets: torch.Tensor) -> torch.Tensor:
+    """Mean entropy of target policy distributions."""
+
+    eps = 1e-12
+    safe_targets = torch.clamp(policy_targets, min=eps)
+    entropy = -(policy_targets * torch.log(safe_targets)).sum(dim=1)
+    return entropy.mean()
+
+
 def policy_argmax_accuracy(
     policy_logits: torch.Tensor,
     policy_targets: torch.Tensor,
@@ -308,6 +440,58 @@ def policy_argmax_accuracy(
     total = int(policy_targets.shape[0])
 
     return correct, total
+
+
+def create_model(
+    board_size: int,
+    input_channels: int,
+    model_variant: str,
+) -> Tuple[nn.Module, Dict]:
+    """Create a model and return model_config metadata."""
+
+    variant = str(model_variant).strip().lower().replace("-", "_").replace(" ", "_")
+
+    if variant in ("legacy", "old", "default"):
+        model = GomokuPolicyValueNet(
+            board_size=board_size,
+            input_channels=input_channels,
+        )
+        model_config = {
+            "model_variant": "legacy",
+            "board_size": board_size,
+            "input_channels": input_channels,
+            "conv_channels": list(getattr(model, "conv_channels", (64, 64, 64))),
+            "policy_head_channels": getattr(model, "policy_head_channels", 2),
+            "value_head_channels": getattr(model, "value_head_channels", 1),
+            "value_hidden_size": getattr(model, "value_hidden_size", 64),
+        }
+        return model, model_config
+
+    if variant in ("paper", "paper_9x9", "repro", "reproduction", "svn"):
+        if board_size != 9:
+            raise ValueError("--model-variant paper_9x9 requires board_size=9.")
+        if input_channels != 4:
+            raise ValueError(
+                "--model-variant paper_9x9 requires 4-channel states. "
+                "Regenerate self-play data with paper_9x9 NN-MCTS encoding."
+            )
+
+        model = GomokuPolicyValueNet.create_paper_9x9()
+        model_config = {
+            "model_variant": "paper_9x9",
+            "board_size": 9,
+            "input_channels": 4,
+            "conv_channels": [32, 64, 128],
+            "policy_head_channels": 4,
+            "value_head_channels": 2,
+            "value_hidden_size": 64,
+        }
+        return model, model_config
+
+    raise ValueError(
+        f"Unknown model variant: {model_variant!r}. "
+        "Valid values: legacy, paper_9x9."
+    )
 
 
 def load_checkpoint_if_requested(
@@ -380,6 +564,8 @@ def run_one_epoch(
     total_loss_sum = 0.0
     policy_loss_sum = 0.0
     value_loss_sum = 0.0
+    policy_entropy_sum = 0.0
+    target_entropy_sum = 0.0
     correct_actions = 0
     total_samples = 0
 
@@ -413,6 +599,13 @@ def run_one_epoch(
         policy_loss_sum += float(policy_loss.item()) * batch_size
         value_loss_sum += float(value_loss.item()) * batch_size
 
+        with torch.no_grad():
+            model_entropy = policy_entropy(policy_logits.detach())
+            target_entropy = target_policy_entropy(policy_targets.detach())
+
+        policy_entropy_sum += float(model_entropy.item()) * batch_size
+        target_entropy_sum += float(target_entropy.item()) * batch_size
+
         correct, total = policy_argmax_accuracy(
             policy_logits=policy_logits.detach(),
             policy_targets=policy_targets.detach(),
@@ -428,6 +621,8 @@ def run_one_epoch(
         "loss": total_loss_sum / total_samples,
         "policy_loss": policy_loss_sum / total_samples,
         "value_loss": value_loss_sum / total_samples,
+        "policy_entropy": policy_entropy_sum / total_samples,
+        "target_policy_entropy": target_entropy_sum / total_samples,
         "policy_argmax_accuracy": correct_actions / total_samples,
     }
 
@@ -438,6 +633,8 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     board_size: int,
+    input_channels: int,
+    model_config: Dict,
     dataset_metadata: Dict,
     training_config: Dict,
     train_metrics: Dict[str, float],
@@ -450,6 +647,8 @@ def save_checkpoint(
     checkpoint = {
         "epoch": epoch,
         "board_size": board_size,
+        "input_channels": input_channels,
+        "model_config": model_config,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "dataset_metadata": dataset_metadata,
@@ -494,6 +693,20 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional path where the best validation checkpoint will be saved.",
+    )
+
+    parser.add_argument(
+        "--model-variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "paper_9x9"],
+        help="Network architecture to train. Use paper_9x9 for the 9x9 reproduction model.",
+    )
+
+    parser.add_argument(
+        "--augment-symmetries",
+        action="store_true",
+        help="Apply all 8 rotation/reflection board symmetries to the dataset.",
     )
 
     parser.add_argument("--epochs", type=int, default=10)
@@ -541,6 +754,42 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--num-workers must be non-negative.")
 
 
+def print_epoch_metrics(
+    epoch: int,
+    total_epochs: int,
+    train_metrics: Dict[str, float],
+    val_metrics: Optional[Dict[str, float]],
+) -> None:
+    """Print compact training metrics."""
+
+    if val_metrics is not None:
+        print(
+            f"Epoch {epoch:03d}/{total_epochs:03d} | "
+            f"train loss={train_metrics['loss']:.4f} "
+            f"policy={train_metrics['policy_loss']:.4f} "
+            f"value={train_metrics['value_loss']:.4f} "
+            f"entropy={train_metrics['policy_entropy']:.4f} "
+            f"target_entropy={train_metrics['target_policy_entropy']:.4f} "
+            f"acc={train_metrics['policy_argmax_accuracy']:.4f} | "
+            f"val loss={val_metrics['loss']:.4f} "
+            f"policy={val_metrics['policy_loss']:.4f} "
+            f"value={val_metrics['value_loss']:.4f} "
+            f"entropy={val_metrics['policy_entropy']:.4f} "
+            f"target_entropy={val_metrics['target_policy_entropy']:.4f} "
+            f"acc={val_metrics['policy_argmax_accuracy']:.4f}"
+        )
+    else:
+        print(
+            f"Epoch {epoch:03d}/{total_epochs:03d} | "
+            f"train loss={train_metrics['loss']:.4f} "
+            f"policy={train_metrics['policy_loss']:.4f} "
+            f"value={train_metrics['value_loss']:.4f} "
+            f"entropy={train_metrics['policy_entropy']:.4f} "
+            f"target_entropy={train_metrics['target_policy_entropy']:.4f} "
+            f"acc={train_metrics['policy_argmax_accuracy']:.4f}"
+        )
+
+
 def main() -> None:
     """Train the policy-value network."""
 
@@ -550,7 +799,10 @@ def main() -> None:
     set_random_seed(args.seed)
     device = resolve_device(args.device)
 
-    dataset, dataset_metadata, board_size = load_dataset(args.data_path)
+    dataset, dataset_metadata, board_size, input_channels = load_dataset(
+        data_path=args.data_path,
+        augment_symmetries=args.augment_symmetries,
+    )
 
     train_dataset, val_dataset = split_dataset(
         dataset=dataset,
@@ -577,7 +829,11 @@ def main() -> None:
             pin_memory=(device.type == "cuda"),
         )
 
-    model = GomokuPolicyValueNet(board_size=board_size)
+    model, model_config = create_model(
+        board_size=board_size,
+        input_channels=input_channels,
+        model_variant=args.model_variant,
+    )
     model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -597,6 +853,8 @@ def main() -> None:
         "data_path": str(args.data_path),
         "output_path": str(args.output_path),
         "best_output": str(args.best_output) if args.best_output else None,
+        "model_variant": args.model_variant,
+        "augment_symmetries": args.augment_symmetries,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
@@ -610,12 +868,18 @@ def main() -> None:
         if args.resume_checkpoint
         else None,
         "policy_loss": "soft_cross_entropy",
+        "metrics": ["policy_argmax_accuracy", "policy_entropy", "target_policy_entropy"],
     }
 
     print("Training configuration:")
     print(f"  device: {device}")
     print(f"  train samples: {len(train_dataset)}")
     print(f"  validation samples: {len(val_dataset) if val_dataset is not None else 0}")
+    print(f"  board_size: {board_size}")
+    print(f"  input_channels: {input_channels}")
+    print(f"  model_variant: {args.model_variant}")
+    print(f"  model_config: {model_config}")
+    print(f"  augment_symmetries: {args.augment_symmetries}")
     print(f"  epochs: {args.epochs}")
     print(f"  batch_size: {args.batch_size}")
     print(f"  learning_rate: {args.learning_rate}")
@@ -631,6 +895,7 @@ def main() -> None:
 
     best_val_loss = float("inf")
     best_epoch = None
+    train_metrics = {}
 
     for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = run_one_epoch(
@@ -653,44 +918,36 @@ def main() -> None:
                     value_loss_weight=args.value_loss_weight,
                 )
 
-        if val_metrics is not None:
-            print(
-                f"Epoch {epoch:03d}/{args.epochs:03d} | "
-                f"train loss={train_metrics['loss']:.4f} "
-                f"policy={train_metrics['policy_loss']:.4f} "
-                f"value={train_metrics['value_loss']:.4f} "
-                f"acc={train_metrics['policy_argmax_accuracy']:.4f} | "
-                f"val loss={val_metrics['loss']:.4f} "
-                f"policy={val_metrics['policy_loss']:.4f} "
-                f"value={val_metrics['value_loss']:.4f} "
-                f"acc={val_metrics['policy_argmax_accuracy']:.4f}"
+        print_epoch_metrics(
+            epoch=epoch,
+            total_epochs=args.epochs,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+        )
+
+        if (
+            val_metrics is not None
+            and args.best_output is not None
+            and val_metrics["loss"] < best_val_loss
+        ):
+            best_val_loss = val_metrics["loss"]
+            best_epoch = epoch
+
+            save_checkpoint(
+                output_path=args.best_output,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                board_size=board_size,
+                input_channels=input_channels,
+                model_config=model_config,
+                dataset_metadata=dataset_metadata,
+                training_config=training_config,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
             )
 
-            if args.best_output is not None and val_metrics["loss"] < best_val_loss:
-                best_val_loss = val_metrics["loss"]
-                best_epoch = epoch
-
-                save_checkpoint(
-                    output_path=args.best_output,
-                    model=model,
-                    optimizer=optimizer,
-                    epoch=epoch,
-                    board_size=board_size,
-                    dataset_metadata=dataset_metadata,
-                    training_config=training_config,
-                    train_metrics=train_metrics,
-                    val_metrics=val_metrics,
-                )
-
-                print(f"  Saved best checkpoint: {args.best_output}")
-        else:
-            print(
-                f"Epoch {epoch:03d}/{args.epochs:03d} | "
-                f"train loss={train_metrics['loss']:.4f} "
-                f"policy={train_metrics['policy_loss']:.4f} "
-                f"value={train_metrics['value_loss']:.4f} "
-                f"acc={train_metrics['policy_argmax_accuracy']:.4f}"
-            )
+            print(f"  Saved best checkpoint: {args.best_output}")
 
     final_val_metrics = None
 
@@ -710,6 +967,8 @@ def main() -> None:
         optimizer=optimizer,
         epoch=args.epochs,
         board_size=board_size,
+        input_channels=input_channels,
+        model_config=model_config,
         dataset_metadata=dataset_metadata,
         training_config=training_config,
         train_metrics=train_metrics,

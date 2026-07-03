@@ -3,12 +3,16 @@ Generate self-play data for training the Gomoku policy-value network.
 
 This script supports Random, Greedy, and NN-MCTS self-play data generation.
 
-For NN-MCTS, this version supports AlphaZero-style policy targets:
+For NN-MCTS, it supports AlphaZero-style policy targets:
 instead of storing only the final selected move as a one-hot vector, it can store
 the MCTS visit-count policy distribution returned by NNMCTSAgent.
 
-This is still a lightweight implementation, but it is closer to AlphaZero-style
-training than the previous one-hot-only pipeline.
+It also supports the 9x9 paper-style NN-MCTS reproduction path:
+
+- --model-variant paper_9x9
+- NNMCTSAgent(board_size=9, model_variant="paper_9x9")
+- 4-channel state encoding with last-move plane
+- metadata records model_variant and input_channels
 """
 
 from __future__ import annotations
@@ -47,6 +51,35 @@ class SelfPlaySample:
     value_target: float = 0.0
 
 
+def normalise_model_variant(model_variant: str) -> str:
+    """Normalize model variant names."""
+
+    value = str(model_variant).strip().lower().replace("-", "_").replace(" ", "_")
+
+    aliases = {
+        "legacy": "legacy",
+        "old": "legacy",
+        "default": "legacy",
+        "paper": "paper_9x9",
+        "paper_9x9": "paper_9x9",
+        "repro": "paper_9x9",
+        "reproduction": "paper_9x9",
+        "svn": "paper_9x9",
+    }
+
+    if value not in aliases:
+        valid = ", ".join(sorted(aliases))
+        raise ValueError(f"Unknown model variant: {model_variant!r}. Valid values include: {valid}")
+
+    return aliases[value]
+
+
+def include_last_move_for_variant(model_variant: str) -> bool:
+    """Paper-style model uses the 4-channel encoding with last move."""
+
+    return normalise_model_variant(model_variant) == "paper_9x9"
+
+
 def create_agent(
     agent_name: str,
     board_size: int,
@@ -56,6 +89,7 @@ def create_agent(
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    model_variant: str,
 ):
     """Create an agent for self-play data generation."""
 
@@ -80,6 +114,7 @@ def create_agent(
             candidate_radius=nn_mcts_candidate_radius,
             device=nn_mcts_device,
             seed=seed,
+            model_variant=model_variant,
         )
 
     raise ValueError(f"Unsupported agent: {agent_name}")
@@ -276,6 +311,7 @@ def play_self_play_game(
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    model_variant: str,
     policy_target_mode: str,
     temperature_moves: int,
     temperature: float,
@@ -298,6 +334,9 @@ def play_self_play_game(
 
     rng = random.Random(seed)
 
+    model_variant = normalise_model_variant(model_variant)
+    include_last_move = include_last_move_for_variant(model_variant)
+
     game = Game(board_size=board_size, rule_name=rule)
 
     black_agent = create_agent(
@@ -309,6 +348,7 @@ def play_self_play_game(
         nn_mcts_exploration_weight=nn_mcts_exploration_weight,
         nn_mcts_candidate_radius=nn_mcts_candidate_radius,
         nn_mcts_device=nn_mcts_device,
+        model_variant=model_variant,
     )
 
     white_agent = create_agent(
@@ -320,6 +360,7 @@ def play_self_play_game(
         nn_mcts_exploration_weight=nn_mcts_exploration_weight,
         nn_mcts_candidate_radius=nn_mcts_candidate_radius,
         nn_mcts_device=nn_mcts_device,
+        model_variant=model_variant,
     )
 
     samples: List[SelfPlaySample] = []
@@ -331,7 +372,11 @@ def play_self_play_game(
         current_player = game.current_player
         agent = black_agent if current_player == Board.BLACK else white_agent
 
-        state = encode_board_state(game.board, current_player)
+        state = encode_board_state(
+            game.board,
+            current_player,
+            include_last_move=include_last_move,
+        )
 
         move, policy_target, target_kind = choose_move_and_policy_target(
             game=game,
@@ -448,13 +493,15 @@ def build_default_output_path(
     policy_target_mode: str,
     temperature_moves: int,
     temperature: float,
+    model_variant: str,
 ) -> Path:
     """Build a readable default output filename."""
 
     temperature_text = str(temperature).replace(".", "p")
+    variant_text = normalise_model_variant(model_variant)
 
     filename = (
-        f"self_play_{agent}_{rule}_{board_size}x{board_size}"
+        f"self_play_{agent}_{variant_text}_{rule}_{board_size}x{board_size}"
         f"_{games}games_seed{seed}_{policy_target_mode}"
         f"_temp{temperature_text}_moves{temperature_moves}.npz"
     )
@@ -503,6 +550,17 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--model-variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "paper_9x9"],
+        help=(
+            "NN-MCTS model architecture. Use paper_9x9 for the 9x9 "
+            "paper-style reproduction path."
+        ),
+    )
+
+    parser.add_argument(
         "--policy-target-mode",
         choices=["auto", "one_hot", "visit_distribution"],
         default="auto",
@@ -530,14 +588,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-    "--policy-temperature",
-    type=float,
-    default=1.0,
-    help=(
-        "Temperature used when saving NN-MCTS visit distributions as "
-        "policy targets. Keep this at 1.0 for soft AlphaZero-style targets."
-    ),
-)
+        "--policy-temperature",
+        type=float,
+        default=1.0,
+        help=(
+            "Temperature used when saving NN-MCTS visit distributions as "
+            "policy targets. Keep this at 1.0 for soft AlphaZero-style targets."
+        ),
+    )
 
     # NN-MCTS options
     parser.add_argument("--nn-mcts-simulations", type=int, default=25)
@@ -607,12 +665,23 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.opening_exploration_radius <= 0:
         raise ValueError("--opening-exploration-radius must be positive.")
 
+    model_variant = normalise_model_variant(args.model_variant)
+
+    if model_variant == "paper_9x9":
+        if args.board_size != 9:
+            raise ValueError("--model-variant paper_9x9 requires --board-size 9.")
+        if args.agent != "nn_mcts":
+            raise ValueError("--model-variant paper_9x9 is intended for --agent nn_mcts.")
+
 
 def main() -> None:
     """Generate and save self-play data."""
 
     args = parse_args()
     validate_args(args)
+
+    model_variant = normalise_model_variant(args.model_variant)
+    input_channels = 4 if include_last_move_for_variant(model_variant) else 3
 
     resolved_policy_target_mode = resolve_policy_target_mode(
         agent_name=args.agent,
@@ -635,6 +704,7 @@ def main() -> None:
         policy_target_mode=resolved_policy_target_mode,
         temperature_moves=args.temperature_moves,
         temperature=args.temperature,
+        model_variant=model_variant,
     )
 
     all_samples: List[SelfPlaySample] = []
@@ -649,6 +719,8 @@ def main() -> None:
     print(f"  board_size: {args.board_size}")
     print(f"  rule: {args.rule}")
     print(f"  agent: {args.agent}")
+    print(f"  model_variant: {model_variant}")
+    print(f"  input_channels: {input_channels}")
     print(f"  max_moves: {args.max_moves}")
     print(f"  seed: {args.seed}")
     print(f"  requested_policy_target_mode: {args.policy_target_mode}")
@@ -687,6 +759,7 @@ def main() -> None:
             nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
             nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
             nn_mcts_device=args.nn_mcts_device,
+            model_variant=model_variant,
             policy_target_mode=resolved_policy_target_mode,
             temperature_moves=args.temperature_moves,
             temperature=args.temperature,
@@ -719,6 +792,8 @@ def main() -> None:
         "board_size": args.board_size,
         "rule": args.rule,
         "agent": args.agent,
+        "model_variant": model_variant,
+        "input_channels": input_channels,
         "seed": args.seed,
         "max_moves": args.max_moves,
         "requested_policy_target_mode": args.policy_target_mode,
