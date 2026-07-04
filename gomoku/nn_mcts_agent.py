@@ -31,6 +31,15 @@ The paper-style mode uses:
     - GomokuPolicyValueNet.create_paper_9x9()
     - 4-channel encoding with the last-move plane
     - board_size=9
+
+Practical project adjustment:
+    This version also includes a root-level tactical safety check.
+    Before running neural-network-guided MCTS, the agent checks:
+        1. whether the current player has an immediate winning move;
+        2. whether the opponent has an immediate winning move that must be blocked.
+
+    This keeps the compute-limited NN-MCTS agent from missing basic one-move
+    Gomoku tactics while still using the paper-style NN-MCTS pipeline otherwise.
 """
 
 from __future__ import annotations
@@ -51,6 +60,7 @@ from gomoku.neural_network import (
     encode_board_state,
     move_to_action,
 )
+from gomoku.win_checker import is_winning_move
 
 
 Move = Tuple[int, int]
@@ -148,11 +158,15 @@ class NNMCTSAgent:
 
             "paper_9x9":
                 Reference-paper-style 9x9 network and 4-channel encoding.
-                This is the mode we will use for the new NN-MCTS reproduction.
+                This is the mode we use for the NN-MCTS reproduction/adaptation.
 
         include_last_move:
             Optional override for board encoding. If None, it is inferred from
             the selected model variant / model input channels.
+
+        enable_tactical_safety:
+            If True, check immediate winning moves and immediate blocks before
+            running neural-network-guided MCTS.
     """
 
     def __init__(
@@ -166,6 +180,7 @@ class NNMCTSAgent:
         seed: Optional[int] = None,
         model_variant: str = "legacy",
         include_last_move: Optional[bool] = None,
+        enable_tactical_safety: bool = True,
     ) -> None:
         if board_size <= 0:
             raise ValueError("board_size must be positive.")
@@ -186,6 +201,7 @@ class NNMCTSAgent:
         self.rng = random.Random(seed)
         self.device = self._resolve_device(device)
         self.model_variant = self._normalise_model_variant(model_variant)
+        self.enable_tactical_safety = bool(enable_tactical_safety)
 
         self.model = self._create_model(
             board_size=board_size,
@@ -308,7 +324,6 @@ class NNMCTSAgent:
         """
         Rebuild model when the checkpoint stores architecture metadata.
 
-        This will be useful after we modify train_nn.py to save model_config.
         Older checkpoints do not contain this metadata, so they keep the already
         constructed model.
         """
@@ -360,6 +375,7 @@ class NNMCTSAgent:
             "model_variant": self.model_variant,
             "include_last_move": self.include_last_move,
             "input_channels": getattr(self.model, "input_channels", None),
+            "enable_tactical_safety": self.enable_tactical_safety,
         }
 
     @property
@@ -438,9 +454,14 @@ class NNMCTSAgent:
             centre_move = (centre, centre)
 
             if centre_move in legal_moves:
-                policy = np.zeros(self.board_size * self.board_size, dtype=np.float32)
-                policy[move_to_action(centre_move, self.board_size)] = 1.0
-                return centre_move, policy
+                return centre_move, self._one_hot_policy(centre_move)
+
+        # Practical tactical safety:
+        # Do not let a weak neural prior/value miss immediate wins or blocks.
+        if self.enable_tactical_safety:
+            tactical_move = self._find_tactical_move(game, legal_moves)
+            if tactical_move is not None:
+                return tactical_move, self._one_hot_policy(tactical_move)
 
         root = NNMCTSNode(game=game.copy())
 
@@ -449,9 +470,7 @@ class NNMCTSAgent:
 
         if not root.children:
             move = legal_moves[0]
-            policy = np.zeros(self.board_size * self.board_size, dtype=np.float32)
-            policy[move_to_action(move, self.board_size)] = 1.0
-            return move, policy
+            return move, self._one_hot_policy(move)
 
         for _ in range(self.simulations):
             node = root
@@ -482,6 +501,76 @@ class NNMCTSAgent:
         )
 
         return selected_move, policy_distribution
+
+    def _one_hot_policy(self, move: Move) -> np.ndarray:
+        """Return a one-hot full-board policy for a selected move."""
+
+        policy = np.zeros(self.board_size * self.board_size, dtype=np.float32)
+        policy[move_to_action(move, self.board_size)] = 1.0
+        return policy
+
+    def _find_tactical_move(
+        self,
+        game: Game,
+        legal_moves: List[Move],
+    ) -> Optional[Move]:
+        """
+        Find an immediate tactical move at the root.
+
+        Priority:
+            1. win immediately if possible;
+            2. block the opponent's immediate win if necessary.
+        """
+
+        current_player = int(game.current_player)
+        opponent = -current_player
+
+        winning_move = self._find_immediate_winning_move_for_player(
+            game=game,
+            legal_moves=legal_moves,
+            player=current_player,
+        )
+
+        if winning_move is not None:
+            return winning_move
+
+        blocking_move = self._find_immediate_winning_move_for_player(
+            game=game,
+            legal_moves=legal_moves,
+            player=opponent,
+        )
+
+        if blocking_move is not None:
+            return blocking_move
+
+        return None
+
+    def _find_immediate_winning_move_for_player(
+        self,
+        game: Game,
+        legal_moves: List[Move],
+        player: int,
+    ) -> Optional[Move]:
+        """Return a legal move that immediately wins for player, if any."""
+
+        for move in legal_moves:
+            if self._move_wins_for_player(game=game, move=move, player=player):
+                return move
+
+        return None
+
+    def _move_wins_for_player(
+        self,
+        game: Game,
+        move: Move,
+        player: int,
+    ) -> bool:
+        """Return True if placing player at move creates five in a row."""
+
+        row, col = move
+        board_copy = game.board.copy()
+        board_copy.place_stone(row, col, player)
+        return is_winning_move(board_copy, move)
 
     def _evaluate_or_expand(self, node: NNMCTSNode) -> float:
         """Evaluate a terminal node or expand a non-terminal leaf."""
