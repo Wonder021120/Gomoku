@@ -40,11 +40,17 @@ class MCTSAgent(BaseAgent):
     A Monte Carlo Tree Search agent.
 
     This implementation uses:
+    - root-level tactical safety
     - UCB1 selection
     - candidate move generation
     - heuristic rollout policy
     - rollout depth limit
     - pattern-based evaluation at rollout cutoff
+
+    Root-level tactical safety:
+    Before running MCTS simulations, the agent checks:
+    1. whether the current player can win immediately;
+    2. whether the opponent can win immediately and must be blocked.
     """
 
     simulations: int = 50
@@ -81,7 +87,26 @@ class MCTSAgent(BaseAgent):
 
         if len(game.board.move_history) == 0:
             centre = game.board.size // 2
-            return (centre, centre)
+            centre_move = (centre, centre)
+
+            if centre_move in legal_moves:
+                return centre_move
+
+            return self.rng.choice(legal_moves)
+
+        # Root-level tactical safety.
+        # This makes MCTS directly take immediate wins and immediate blocks
+        # instead of relying on rollout statistics to discover them.
+        current_player = game.current_player
+        opponent = self._opponent(current_player)
+
+        winning_move = self._find_immediate_winning_move(game, current_player)
+        if winning_move is not None:
+            return winning_move
+
+        blocking_move = self._find_immediate_winning_move(game, opponent)
+        if blocking_move is not None:
+            return blocking_move
 
         root_player = game.current_player
         root = MCTSNode(game=game.copy())
@@ -195,8 +220,8 @@ class MCTSAgent(BaseAgent):
         Estimate a non-terminal rollout cutoff position.
 
         Uses the Minimax pattern evaluator and maps the score to:
-        - > 0.05 means favourable for root_player
-        - < 0.05 means unfavourable
+        - > 100 means favourable for root_player
+        - < -100 means unfavourable for root_player
         - otherwise balanced
         """
         score = self.evaluator._evaluate_board(game.board, root_player)
@@ -240,13 +265,16 @@ class MCTSAgent(BaseAgent):
     def _find_immediate_winning_move(self, game: Game, player: int) -> Optional[Move]:
         """
         Return a move that lets player win immediately, if one exists.
-        """
-        for move in self._get_candidate_moves(game):
-            simulated_game = game.copy()
-            row, col = move
-            simulated_game.board.place_stone(row, col, player)
 
-            if is_winning_move(simulated_game.board, move):
+        The search uses all legal moves, not only candidate moves, so an
+        immediate win/block cannot be lost because of candidate pruning.
+        """
+        for move in game.get_legal_moves():
+            simulated_board = game.board.copy()
+            row, col = move
+            simulated_board.place_stone(row, col, player)
+
+            if is_winning_move(simulated_board, move):
                 return move
 
         return None
@@ -273,9 +301,15 @@ class MCTSAgent(BaseAgent):
 
         if len(game.board.move_history) == 0:
             centre = game.board.size // 2
-            return [(centre, centre)]
+            centre_move = (centre, centre)
+
+            if centre_move in legal_moves:
+                return [centre_move]
+
+            return legal_moves
 
         candidates: set[Move] = set()
+        legal_set = set(legal_moves)
         size = game.board.size
 
         for stone_position, _player in game.board.move_history:
@@ -285,13 +319,10 @@ class MCTSAgent(BaseAgent):
                 for delta_col in range(-self.candidate_radius, self.candidate_radius + 1):
                     candidate_row = row + delta_row
                     candidate_col = col + delta_col
+                    candidate_move = (candidate_row, candidate_col)
 
-                    if (
-                        0 <= candidate_row < size
-                        and 0 <= candidate_col < size
-                        and game.board.is_empty(candidate_row, candidate_col)
-                    ):
-                        candidates.add((candidate_row, candidate_col))
+                    if candidate_move in legal_set:
+                        candidates.add(candidate_move)
 
         if not candidates:
             return legal_moves
