@@ -38,3 +38,6 @@ data/self_play/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Experiment outputs
+experiments/nn_mcts_training_loop*/
