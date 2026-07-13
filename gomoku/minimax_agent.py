@@ -8,6 +8,7 @@ from typing import Optional
 from gomoku.agents import BaseAgent
 from gomoku.board import Board, Move
 from gomoku.game import Game, GameStatus
+from gomoku.win_checker import is_winning_move
 
 
 WIN_SCORE = 1_000_000
@@ -27,12 +28,21 @@ class MinimaxAgent(BaseAgent):
     candidate_radius: int = 2
     seed: Optional[int] = None
     name: str = "minimax"
+    selection: str = "best"
+    temperature: float = 0.5
+    top_k: int = 5
+    enable_tactical_safety: bool = True
 
     def __post_init__(self) -> None:
         if self.depth <= 0:
             raise ValueError("Search depth must be positive.")
         if self.candidate_radius <= 0:
             raise ValueError("Candidate radius must be positive.")
+        self.selection = self._normalise_selection(self.selection)
+        if self.temperature <= 0:
+            raise ValueError("Softmax temperature must be positive.")
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive.")
         self.rng = random.Random(self.seed)
 
     def select_move(self, game: Game) -> Move:
@@ -44,13 +54,31 @@ class MinimaxAgent(BaseAgent):
         # On an empty board, play the centre. This reduces the opening branching factor.
         if len(game.board.move_history) == 0:
             centre = game.board.size // 2
-            return (centre, centre)
+            centre_move = (centre, centre)
+
+            if centre_move in legal_moves:
+                return centre_move
+
+            return self.rng.choice(legal_moves)
 
         root_player = game.current_player
-        best_score = -math.inf
-        best_moves: list[Move] = []
+
+        # Forced tactical moves are not sampled.
+        # This keeps the stochastic mode from missing one-move wins or required blocks.
+        if self.enable_tactical_safety:
+            winning_move = self._find_immediate_winning_move(game, root_player)
+            if winning_move is not None:
+                return winning_move
+
+            blocking_move = self._find_immediate_winning_move(
+                game,
+                self._opponent(root_player),
+            )
+            if blocking_move is not None:
+                return blocking_move
 
         candidate_moves = self._get_candidate_moves(game)
+        scored_moves: list[tuple[Move, float]] = []
 
         for move in candidate_moves:
             simulated_game = game.copy()
@@ -63,14 +91,106 @@ class MinimaxAgent(BaseAgent):
                 beta=math.inf,
                 root_player=root_player,
             )
+            scored_moves.append((move, score))
 
-            if score > best_score:
-                best_score = score
-                best_moves = [move]
-            elif score == best_score:
-                best_moves.append(move)
+        if not scored_moves:
+            return self.rng.choice(legal_moves)
 
+        if self.selection == "softmax":
+            return self._select_softmax_move(scored_moves)
+
+        best_score = max(score for _move, score in scored_moves)
+        best_moves = [move for move, score in scored_moves if score == best_score]
         return self.rng.choice(best_moves)
+
+
+    def _normalise_selection(self, selection: str) -> str:
+        value = str(selection).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "best": "best",
+            "deterministic": "best",
+            "argmax": "best",
+            "max": "best",
+            "softmax": "softmax",
+            "sample": "softmax",
+            "stochastic": "softmax",
+        }
+
+        if value not in aliases:
+            valid = ", ".join(sorted(aliases))
+            raise ValueError(f"Unknown Minimax selection mode {selection!r}. Valid values include: {valid}")
+
+        return aliases[value]
+
+    def _select_softmax_move(self, scored_moves: list[tuple[Move, float]]) -> Move:
+        """
+        Sample from the top-k scored moves using a stable softmax.
+
+        Raw Minimax scores can be very large, so scores are first normalised
+        within the selected top-k set. This preserves the ordering while making
+        temperature values such as 0.5 and 1.0 useful in practice.
+        """
+        ordered = sorted(scored_moves, key=lambda item: item[1], reverse=True)
+        top_moves = ordered[: min(self.top_k, len(ordered))]
+
+        if len(top_moves) == 1:
+            return top_moves[0][0]
+
+        scores = [score for _move, score in top_moves]
+        min_score = min(scores)
+        max_score = max(scores)
+
+        if max_score == min_score:
+            return self.rng.choice([move for move, _score in top_moves])
+
+        normalised_scores = [
+            (score - min_score) / (max_score - min_score)
+            for score in scores
+        ]
+
+        max_normalised = max(normalised_scores)
+        logits = [
+            (score - max_normalised) / self.temperature
+            for score in normalised_scores
+        ]
+        weights = [math.exp(logit) for logit in logits]
+        total_weight = sum(weights)
+
+        if total_weight <= 0 or not math.isfinite(total_weight):
+            return self.rng.choice([move for move, _score in top_moves])
+
+        threshold = self.rng.random()
+        cumulative = 0.0
+
+        for (move, _score), weight in zip(top_moves, weights):
+            cumulative += weight / total_weight
+            if threshold <= cumulative:
+                return move
+
+        return top_moves[-1][0]
+
+    def _find_immediate_winning_move(self, game: Game, player: int) -> Optional[Move]:
+        """
+        Return a legal move that immediately wins for player, if one exists.
+
+        This checks all legal moves rather than only candidate moves, so the
+        tactical safeguard cannot miss a direct win or block because of pruning.
+        """
+        winning_moves: list[Move] = []
+
+        for move in game.get_legal_moves():
+            simulated_board = game.board.copy()
+            row, col = move
+            simulated_board.place_stone(row, col, player)
+
+            if is_winning_move(simulated_board, move):
+                winning_moves.append(move)
+
+        if not winning_moves:
+            return None
+
+        return self.rng.choice(winning_moves)
+
 
     def _minimax(
         self,

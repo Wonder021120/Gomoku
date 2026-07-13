@@ -181,6 +181,8 @@ class NNMCTSAgent:
         model_variant: str = "legacy",
         include_last_move: Optional[bool] = None,
         enable_tactical_safety: bool = True,
+        selection: str = "best",
+        selection_temperature: float = 1.0,
     ) -> None:
         if board_size <= 0:
             raise ValueError("board_size must be positive.")
@@ -202,6 +204,10 @@ class NNMCTSAgent:
         self.device = self._resolve_device(device)
         self.model_variant = self._normalise_model_variant(model_variant)
         self.enable_tactical_safety = bool(enable_tactical_safety)
+        self.selection = self._normalise_selection(selection)
+        if selection_temperature <= 0:
+            raise ValueError("NN-MCTS selection temperature must be positive.")
+        self.selection_temperature = float(selection_temperature)
 
         self.model = self._create_model(
             board_size=board_size,
@@ -238,6 +244,28 @@ class NNMCTSAgent:
             raise ValueError(f"Unknown model_variant {model_variant!r}. Valid values include: {valid}")
 
         return aliases[value]
+
+
+    def _normalise_selection(self, selection: str) -> str:
+        value = str(selection).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "best": "best",
+            "deterministic": "best",
+            "argmax": "best",
+            "visits": "best",
+            "max_visits": "best",
+            "sample": "sample",
+            "stochastic": "sample",
+            "visit_sample": "sample",
+            "sample_from_visits": "sample",
+        }
+
+        if value not in aliases:
+            valid = ", ".join(sorted(aliases))
+            raise ValueError(f"Unknown NN-MCTS selection mode {selection!r}. Valid values include: {valid}")
+
+        return aliases[value]
+
 
     def _create_model(self, board_size: int, model_variant: str) -> GomokuPolicyValueNet:
         """Create the policy-value network for the selected mode."""
@@ -376,6 +404,8 @@ class NNMCTSAgent:
             "include_last_move": self.include_last_move,
             "input_channels": getattr(self.model, "input_channels", None),
             "enable_tactical_safety": self.enable_tactical_safety,
+            "selection": self.selection,
+            "selection_temperature": self.selection_temperature,
         }
 
     @property
@@ -391,9 +421,11 @@ class NNMCTSAgent:
         This keeps the old public interface used by tournament code.
         """
 
+        move_temperature = 0.0 if self.selection == "best" else self.selection_temperature
+
         move, _policy = self.select_move_with_policy(
             game=game,
-            move_temperature=0.0,
+            move_temperature=move_temperature,
             policy_temperature=1.0,
             rng=self.rng,
         )

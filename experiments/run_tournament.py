@@ -24,15 +24,22 @@ def create_agent(
     board_size: int,
     minimax_depth: int,
     minimax_candidate_radius: int,
+    minimax_selection: str,
+    minimax_temperature: float,
+    minimax_top_k: int,
     mcts_simulations: int,
     mcts_exploration_weight: float,
     mcts_candidate_radius: int,
     mcts_rollout_depth: int,
+    mcts_selection: str,
+    mcts_temperature: float,
     nn_mcts_simulations: int,
     nn_mcts_checkpoint: str | None,
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    nn_mcts_selection: str,
+    nn_mcts_temperature: float,
 ):
     """
     Create an AI agent by name.
@@ -48,6 +55,9 @@ def create_agent(
             depth=minimax_depth,
             candidate_radius=minimax_candidate_radius,
             seed=seed,
+            selection=minimax_selection,
+            temperature=minimax_temperature,
+            top_k=minimax_top_k,
         )
 
     if agent_name == "mcts":
@@ -57,6 +67,8 @@ def create_agent(
             candidate_radius=mcts_candidate_radius,
             rollout_depth_limit=mcts_rollout_depth,
             seed=seed,
+            selection=mcts_selection,
+            selection_temperature=mcts_temperature,
         )
 
     if agent_name == "nn_mcts":
@@ -68,6 +80,8 @@ def create_agent(
             candidate_radius=nn_mcts_candidate_radius,
             device=nn_mcts_device,
             seed=seed,
+            selection=nn_mcts_selection,
+            selection_temperature=nn_mcts_temperature,
         )
 
     raise ValueError(f"Unknown agent: {agent_name}")
@@ -77,15 +91,22 @@ def build_agent_config(
     agent_name: str,
     minimax_depth: int,
     minimax_candidate_radius: int,
+    minimax_selection: str,
+    minimax_temperature: float,
+    minimax_top_k: int,
     mcts_simulations: int,
     mcts_exploration_weight: float,
     mcts_candidate_radius: int,
     mcts_rollout_depth: int,
+    mcts_selection: str,
+    mcts_temperature: float,
     nn_mcts_simulations: int,
     nn_mcts_checkpoint: str | None,
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    nn_mcts_selection: str,
+    nn_mcts_temperature: float,
 ) -> str:
     """
     Build a readable config string for CSV logging.
@@ -99,7 +120,10 @@ def build_agent_config(
     if agent_name == "minimax":
         return (
             f"depth={minimax_depth};"
-            f"candidate_radius={minimax_candidate_radius}"
+            f"candidate_radius={minimax_candidate_radius};"
+            f"selection={minimax_selection};"
+            f"temperature={minimax_temperature};"
+            f"top_k={minimax_top_k}"
         )
 
     if agent_name == "mcts":
@@ -107,7 +131,9 @@ def build_agent_config(
             f"simulations={mcts_simulations};"
             f"exploration_weight={mcts_exploration_weight};"
             f"candidate_radius={mcts_candidate_radius};"
-            f"rollout_depth={mcts_rollout_depth}"
+            f"rollout_depth={mcts_rollout_depth};"
+            f"selection={mcts_selection};"
+            f"temperature={mcts_temperature}"
         )
 
     if agent_name == "nn_mcts":
@@ -118,7 +144,9 @@ def build_agent_config(
             f"checkpoint={checkpoint_text};"
             f"exploration_weight={nn_mcts_exploration_weight};"
             f"candidate_radius={nn_mcts_candidate_radius};"
-            f"device={nn_mcts_device}"
+            f"device={nn_mcts_device};"
+            f"selection={nn_mcts_selection};"
+            f"temperature={nn_mcts_temperature}"
         )
 
     return "unknown"
@@ -133,15 +161,22 @@ def run_tournament(
     seed: int,
     minimax_depth: int,
     minimax_candidate_radius: int,
+    minimax_selection: str,
+    minimax_temperature: float,
+    minimax_top_k: int,
     mcts_simulations: int,
     mcts_exploration_weight: float,
     mcts_candidate_radius: int,
     mcts_rollout_depth: int,
+    mcts_selection: str,
+    mcts_temperature: float,
     nn_mcts_simulations: int,
     nn_mcts_checkpoint: str | None,
     nn_mcts_exploration_weight: float,
     nn_mcts_candidate_radius: int,
     nn_mcts_device: str,
+    nn_mcts_selection: str,
+    nn_mcts_temperature: float,
 ) -> list[MatchResult]:
     """
     Run multiple games and return match results.
@@ -160,15 +195,22 @@ def run_tournament(
             board_size=board_size,
             minimax_depth=minimax_depth,
             minimax_candidate_radius=minimax_candidate_radius,
+            minimax_selection=minimax_selection,
+            minimax_temperature=minimax_temperature,
+            minimax_top_k=minimax_top_k,
             mcts_simulations=mcts_simulations,
             mcts_exploration_weight=mcts_exploration_weight,
             mcts_candidate_radius=mcts_candidate_radius,
             mcts_rollout_depth=mcts_rollout_depth,
+            mcts_selection=mcts_selection,
+            mcts_temperature=mcts_temperature,
             nn_mcts_simulations=nn_mcts_simulations,
             nn_mcts_checkpoint=nn_mcts_checkpoint,
             nn_mcts_exploration_weight=nn_mcts_exploration_weight,
             nn_mcts_candidate_radius=nn_mcts_candidate_radius,
             nn_mcts_device=nn_mcts_device,
+            nn_mcts_selection=nn_mcts_selection,
+            nn_mcts_temperature=nn_mcts_temperature,
         )
 
         white_agent = create_agent(
@@ -177,15 +219,22 @@ def run_tournament(
             board_size=board_size,
             minimax_depth=minimax_depth,
             minimax_candidate_radius=minimax_candidate_radius,
+            minimax_selection=minimax_selection,
+            minimax_temperature=minimax_temperature,
+            minimax_top_k=minimax_top_k,
             mcts_simulations=mcts_simulations,
             mcts_exploration_weight=mcts_exploration_weight,
             mcts_candidate_radius=mcts_candidate_radius,
             mcts_rollout_depth=mcts_rollout_depth,
+            mcts_selection=mcts_selection,
+            mcts_temperature=mcts_temperature,
             nn_mcts_simulations=nn_mcts_simulations,
             nn_mcts_checkpoint=nn_mcts_checkpoint,
             nn_mcts_exploration_weight=nn_mcts_exploration_weight,
             nn_mcts_candidate_radius=nn_mcts_candidate_radius,
             nn_mcts_device=nn_mcts_device,
+            nn_mcts_selection=nn_mcts_selection,
+            nn_mcts_temperature=nn_mcts_temperature,
         )
 
         result = run_match(
@@ -373,6 +422,28 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--minimax-selection",
+        type=str,
+        default="best",
+        choices=["best", "softmax"],
+        help="Minimax final move selection: best or softmax.",
+    )
+
+    parser.add_argument(
+        "--minimax-temperature",
+        type=float,
+        default=0.5,
+        help="Softmax temperature for stochastic Minimax selection.",
+    )
+
+    parser.add_argument(
+        "--minimax-top-k",
+        type=int,
+        default=5,
+        help="Number of top-scoring moves used by stochastic Minimax selection.",
+    )
+
+    parser.add_argument(
         "--mcts-simulations",
         type=int,
         default=50,
@@ -398,6 +469,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="MCTS rollout depth limit.",
+    )
+
+    parser.add_argument(
+        "--mcts-selection",
+        type=str,
+        default="best",
+        choices=["best", "sample"],
+        help="MCTS final move selection: best or sample from root visits.",
+    )
+
+    parser.add_argument(
+        "--mcts-temperature",
+        type=float,
+        default=1.0,
+        help="Visit-count sampling temperature for MCTS.",
     )
 
     parser.add_argument(
@@ -435,6 +521,21 @@ def parse_args() -> argparse.Namespace:
         help="NN-MCTS device: auto, cpu, or cuda.",
     )
 
+    parser.add_argument(
+        "--nn-mcts-selection",
+        type=str,
+        default="best",
+        choices=["best", "sample"],
+        help="NN-MCTS final move selection: best or sample from root visits.",
+    )
+
+    parser.add_argument(
+        "--nn-mcts-temperature",
+        type=float,
+        default=1.0,
+        help="Visit-count sampling temperature for NN-MCTS.",
+    )
+
     return parser.parse_args()
 
 
@@ -445,30 +546,44 @@ if __name__ == "__main__":
         agent_name=args.black,
         minimax_depth=args.minimax_depth,
         minimax_candidate_radius=args.minimax_candidate_radius,
+        minimax_selection=args.minimax_selection,
+        minimax_temperature=args.minimax_temperature,
+        minimax_top_k=args.minimax_top_k,
         mcts_simulations=args.mcts_simulations,
         mcts_exploration_weight=args.mcts_exploration_weight,
         mcts_candidate_radius=args.mcts_candidate_radius,
         mcts_rollout_depth=args.mcts_rollout_depth,
+        mcts_selection=args.mcts_selection,
+        mcts_temperature=args.mcts_temperature,
         nn_mcts_simulations=args.nn_mcts_simulations,
         nn_mcts_checkpoint=args.nn_mcts_checkpoint,
         nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
         nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
         nn_mcts_device=args.nn_mcts_device,
+        nn_mcts_selection=args.nn_mcts_selection,
+        nn_mcts_temperature=args.nn_mcts_temperature,
     )
 
     white_agent_config = build_agent_config(
         agent_name=args.white,
         minimax_depth=args.minimax_depth,
         minimax_candidate_radius=args.minimax_candidate_radius,
+        minimax_selection=args.minimax_selection,
+        minimax_temperature=args.minimax_temperature,
+        minimax_top_k=args.minimax_top_k,
         mcts_simulations=args.mcts_simulations,
         mcts_exploration_weight=args.mcts_exploration_weight,
         mcts_candidate_radius=args.mcts_candidate_radius,
         mcts_rollout_depth=args.mcts_rollout_depth,
+        mcts_selection=args.mcts_selection,
+        mcts_temperature=args.mcts_temperature,
         nn_mcts_simulations=args.nn_mcts_simulations,
         nn_mcts_checkpoint=args.nn_mcts_checkpoint,
         nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
         nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
         nn_mcts_device=args.nn_mcts_device,
+        nn_mcts_selection=args.nn_mcts_selection,
+        nn_mcts_temperature=args.nn_mcts_temperature,
     )
 
     output_path = args.output
@@ -493,15 +608,22 @@ if __name__ == "__main__":
         seed=args.seed,
         minimax_depth=args.minimax_depth,
         minimax_candidate_radius=args.minimax_candidate_radius,
+        minimax_selection=args.minimax_selection,
+        minimax_temperature=args.minimax_temperature,
+        minimax_top_k=args.minimax_top_k,
         mcts_simulations=args.mcts_simulations,
         mcts_exploration_weight=args.mcts_exploration_weight,
         mcts_candidate_radius=args.mcts_candidate_radius,
         mcts_rollout_depth=args.mcts_rollout_depth,
+        mcts_selection=args.mcts_selection,
+        mcts_temperature=args.mcts_temperature,
         nn_mcts_simulations=args.nn_mcts_simulations,
         nn_mcts_checkpoint=args.nn_mcts_checkpoint,
         nn_mcts_exploration_weight=args.nn_mcts_exploration_weight,
         nn_mcts_candidate_radius=args.nn_mcts_candidate_radius,
         nn_mcts_device=args.nn_mcts_device,
+        nn_mcts_selection=args.nn_mcts_selection,
+        nn_mcts_temperature=args.nn_mcts_temperature,
     )
 
     save_results_to_csv(

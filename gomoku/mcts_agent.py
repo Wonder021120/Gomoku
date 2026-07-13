@@ -59,6 +59,8 @@ class MCTSAgent(BaseAgent):
     rollout_depth_limit: int = 30
     seed: Optional[int] = None
     name: str = "mcts"
+    selection: str = "best"
+    selection_temperature: float = 1.0
 
     def __post_init__(self) -> None:
         if self.simulations <= 0:
@@ -69,6 +71,9 @@ class MCTSAgent(BaseAgent):
             raise ValueError("Candidate radius must be positive.")
         if self.rollout_depth_limit <= 0:
             raise ValueError("Rollout depth limit must be positive.")
+        self.selection = self._normalise_selection(self.selection)
+        if self.selection_temperature <= 0:
+            raise ValueError("MCTS selection temperature must be positive.")
 
         self.rng = random.Random(self.seed)
 
@@ -120,12 +125,76 @@ class MCTSAgent(BaseAgent):
         if not root.children:
             return self.rng.choice(legal_moves)
 
-        best_child = max(root.children, key=lambda child: child.visits)
+        selected_child = self._select_final_child(root.children)
 
-        if best_child.move is None:
+        if selected_child.move is None:
             return self.rng.choice(legal_moves)
 
-        return best_child.move
+        return selected_child.move
+
+
+    def _normalise_selection(self, selection: str) -> str:
+        value = str(selection).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "best": "best",
+            "deterministic": "best",
+            "argmax": "best",
+            "visits": "best",
+            "max_visits": "best",
+            "sample": "sample",
+            "stochastic": "sample",
+            "visit_sample": "sample",
+            "sample_from_visits": "sample",
+        }
+
+        if value not in aliases:
+            valid = ", ".join(sorted(aliases))
+            raise ValueError(f"Unknown MCTS selection mode {selection!r}. Valid values include: {valid}")
+
+        return aliases[value]
+
+    def _select_final_child(self, children: list[MCTSNode]) -> MCTSNode:
+        """
+        Select the final root child after simulations.
+
+        best:
+            choose the child with the largest visit count.
+        sample:
+            sample from visit counts with temperature, preserving higher
+            probability for more-visited moves while increasing game diversity.
+        """
+        if not children:
+            raise ValueError("No root children available.")
+
+        if self.selection == "best":
+            max_visits = max(child.visits for child in children)
+            best_children = [child for child in children if child.visits == max_visits]
+            return self.rng.choice(best_children)
+
+        visits = [max(0, child.visits) for child in children]
+
+        if sum(visits) <= 0:
+            return self.rng.choice(children)
+
+        weights = [
+            math.pow(float(visit), 1.0 / self.selection_temperature)
+            for visit in visits
+        ]
+        total_weight = sum(weights)
+
+        if total_weight <= 0 or not math.isfinite(total_weight):
+            return self.rng.choice(children)
+
+        threshold = self.rng.random()
+        cumulative = 0.0
+
+        for child, weight in zip(children, weights):
+            cumulative += weight / total_weight
+            if threshold <= cumulative:
+                return child
+
+        return children[-1]
+
 
     def _select(self, node: MCTSNode) -> MCTSNode:
         """
