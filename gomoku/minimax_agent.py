@@ -103,7 +103,6 @@ class MinimaxAgent(BaseAgent):
         best_moves = [move for move, score in scored_moves if score == best_score]
         return self.rng.choice(best_moves)
 
-
     def _normalise_selection(self, selection: str) -> str:
         value = str(selection).strip().lower().replace("-", "_").replace(" ", "_")
         aliases = {
@@ -118,7 +117,10 @@ class MinimaxAgent(BaseAgent):
 
         if value not in aliases:
             valid = ", ".join(sorted(aliases))
-            raise ValueError(f"Unknown Minimax selection mode {selection!r}. Valid values include: {valid}")
+            raise ValueError(
+                f"Unknown Minimax selection mode {selection!r}. "
+                f"Valid values include: {valid}"
+            )
 
         return aliases[value]
 
@@ -191,6 +193,62 @@ class MinimaxAgent(BaseAgent):
 
         return self.rng.choice(winning_moves)
 
+    def _get_candidate_moves(self, game: Game) -> list[Move]:
+        """
+        Generate rule-legal candidate moves near existing stones.
+
+        The candidate radius is used as an engineering constraint, but generated
+        candidates must still satisfy the active rule. This is important for
+        opening rules such as Pro, where Black's second move is restricted.
+        """
+        legal_moves = game.get_legal_moves()
+
+        if not legal_moves:
+            return []
+
+        legal_set = set(legal_moves)
+
+        if len(game.board.move_history) == 0:
+            centre = game.board.size // 2
+            centre_move = (centre, centre)
+
+            if centre_move in legal_set:
+                return [centre_move]
+
+            return legal_moves
+
+        candidates: set[Move] = set()
+        size = game.board.size
+
+        for stone_position, _player in game.board.move_history:
+            row, col = stone_position
+
+            for delta_row in range(-self.candidate_radius, self.candidate_radius + 1):
+                for delta_col in range(-self.candidate_radius, self.candidate_radius + 1):
+                    candidate_row = row + delta_row
+                    candidate_col = col + delta_col
+                    candidate_move = (candidate_row, candidate_col)
+
+                    if (
+                        0 <= candidate_row < size
+                        and 0 <= candidate_col < size
+                        and candidate_move in legal_set
+                    ):
+                        candidates.add(candidate_move)
+
+        if not candidates:
+            return legal_moves
+
+        centre = size // 2
+
+        return sorted(
+            candidates,
+            key=lambda move: abs(move[0] - centre) + abs(move[1] - centre),
+        )
+
+    @staticmethod
+    def _opponent(player: int) -> int:
+        return Board.WHITE if player == Board.BLACK else Board.BLACK
 
     def _minimax(
         self,
@@ -435,51 +493,3 @@ class MinimaxAgent(BaseAgent):
             lines.append(line)
 
         return lines
-
-    def _get_candidate_moves(self, game: Game) -> list[Move]:
-        """
-        Generate candidate moves near existing stones.
-
-        Searching every empty cell on a 15x15 board is expensive.
-        This method only considers empty cells within candidate_radius
-        of an existing stone.
-        """
-        legal_moves = game.get_legal_moves()
-
-        if not legal_moves:
-            return []
-
-        if len(game.board.move_history) == 0:
-            centre = game.board.size // 2
-            return [(centre, centre)]
-
-        candidates: set[Move] = set()
-        size = game.board.size
-
-        for stone_position, _player in game.board.move_history:
-            row, col = stone_position
-
-            for delta_row in range(-self.candidate_radius, self.candidate_radius + 1):
-                for delta_col in range(-self.candidate_radius, self.candidate_radius + 1):
-                    candidate_row = row + delta_row
-                    candidate_col = col + delta_col
-
-                    if (
-                        0 <= candidate_row < size
-                        and 0 <= candidate_col < size
-                        and game.board.is_empty(candidate_row, candidate_col)
-                    ):
-                        candidates.add((candidate_row, candidate_col))
-
-        if not candidates:
-            return legal_moves
-
-        centre = size // 2
-
-        return sorted(
-            candidates,
-            key=lambda move: abs(move[0] - centre) + abs(move[1] - centre),
-        )
-
-    def _opponent(self, player: int) -> int:
-        return Board.WHITE if player == Board.BLACK else Board.BLACK
